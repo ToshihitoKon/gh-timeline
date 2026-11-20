@@ -46,7 +46,7 @@ func RenderBatches(batches []timeline.Batch, viewer string, width int) string {
 }
 
 // RenderBatch は 1 回のポーリング分を "--- HH:MM ---" の区切り行に続けて、
-// 1 イベント 1 行の "owner/repo PR#123 時刻 アクション ユーザー タイトル" の形で新しい順に描画する。
+// 1 イベント 1 行の "時刻 owner/repo PR#123 アクション ユーザー タイトル" の形で新しい順に描画する。
 // prevCheckedAt は 1 つ前（時刻が古い側）の Batch の時刻で、日付が変わったときだけ区切り行に日付を出す。
 func RenderBatch(b timeline.Batch, prevCheckedAt time.Time, viewer string, width int) string {
 	lines := []string{separator(b.CheckedAt, prevCheckedAt)}
@@ -101,7 +101,7 @@ func batchRows(b timeline.Batch) []row {
 // eventUpdated は個別のイベントを取得できなかった更新を表す、表示専用の種類。
 const eventUpdated github.EventType = -1
 
-// renderRow は "owner/repo PR#123 14:01 review requested dave → you, erin Fix typo" の形の 1 行を描画する。
+// renderRow は "14:01 owner/repo PR#123 review requested dave → you, erin Fix typo" の形の 1 行を描画する。
 // PR#123 / IS#45 の部分は PR / issue の状態（open / draft / merged / closed）の色で塗る。
 func renderRow(r row, checkedAt time.Time, viewer string) string {
 	item := r.Item
@@ -110,9 +110,9 @@ func renderRow(r row, checkedAt time.Time, viewer string) string {
 		kind = "PR"
 	}
 	parts := []string{
+		faintStyle.Render(formatEventTime(r.At, checkedAt)),
 		repoStyle.Render(item.Repo),
 		itemStateStyle(item).Bold(true).Render(fmt.Sprintf("%s#%d", kind, item.Number)),
-		faintStyle.Render(formatEventTime(r.At, checkedAt)),
 		eventStyle(r.Type).Render(actionLabel(r.displayEvent)),
 		userStyle.Render(r.Actor),
 	}
