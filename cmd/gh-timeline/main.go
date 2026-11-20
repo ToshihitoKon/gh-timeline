@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime/debug"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,8 +17,20 @@ import (
 	"github.com/ToshihitoKon/gh-timeline/internal/ui"
 )
 
-// version は goreleaser 等でビルド時に -ldflags "-X main.version=..." で埋め込む想定。
+// version は GoReleaser がビルド時に -ldflags "-X main.version=..." で埋め込む。
 var version = "dev"
+
+// resolveVersion は表示するバージョンを返す。go install でビルドした場合は ldflags が
+// 渡らず "dev" のままになるため、Go が埋め込むモジュールのバージョン（v0.1.0 など）を使う。
+func resolveVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
+}
 
 // minInterval はポーリング間隔の下限。GraphQL の検索は 1 回で 4 クエリ分を消費し、
 // 検索 API には分単位のレート制限もあるため、極端に短い間隔を指定できないようにする。
@@ -32,7 +45,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println(version)
+		fmt.Println(resolveVersion())
 		return
 	}
 	if *interval < minInterval {

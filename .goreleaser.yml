@@ -1,0 +1,32 @@
+version: 2
+project_name: gh-timeline
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - main: ./cmd/gh-timeline
+    binary: gh-timeline
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+archives:
+  # gh extension install は Release から "gh-timeline-<os>-<arch>" で終わる名前のファイルを探し、
+  # そのまま実行ファイルとして置く。アーカイブに固めると見つけられないため、バイナリのまま載せる。
+  - formats: [binary]
+    name_template: '{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}'
+changelog:
+  use: github-native
+release:
+  prerelease: auto
+  footer: |
+    See [CHANGES.md](https://github.com/ToshihitoKon/gh-timeline/blob/{{ .Tag }}/CHANGES.md) for breaking changes and how to migrate.

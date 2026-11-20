@@ -54,6 +54,16 @@ Actions:
 
 Install the [GitHub CLI](https://cli.github.com/) and run `gh auth login` first. gh-timeline uses `gh` for authentication.
 
+Install it as a gh extension:
+
+```sh
+gh extension install ToshihitoKon/gh-timeline
+```
+
+Upgrade with `gh extension upgrade timeline`.
+
+You can also install it as a standalone command with Go. In that case, run `gh-timeline` instead of `gh timeline` in the examples below.
+
 ```sh
 go install github.com/ToshihitoKon/gh-timeline/cmd/gh-timeline@latest
 ```
@@ -61,20 +71,20 @@ go install github.com/ToshihitoKon/gh-timeline/cmd/gh-timeline@latest
 ## Usage
 
 ```sh
-gh-timeline
+gh timeline
 ```
 
 On startup it shows activity from the last 30 minutes, then checks for new activity every 5 minutes.
 
 ```sh
 # Look back 24 hours on startup and check every 2 minutes
-gh-timeline -since 24h -interval 2m
+gh timeline -since 24h -interval 2m
 
 # Include review requests sent to your teams
-gh-timeline -team-reviews
+gh timeline -team-reviews
 
 # Print the current activity once without starting the TUI
-gh-timeline -dump
+gh timeline -dump
 ```
 
 ### Flags
