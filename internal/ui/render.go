@@ -14,18 +14,16 @@ import (
 	"github.com/ToshihitoKon/gh-timeline/internal/timeline"
 )
 
-// 列幅。区切りをまたいでも列がそろうよう、回ごとの最大幅ではなく固定幅にする。
-const (
-	actionColWidth = 18 // 最長のラベル "converted to draft" に合わせる
-	userColWidth   = 16 // GitHub の login は最大 39 文字だが、詳細の列を残すため長いものは切り詰める
-)
-
 // 現状はダーク背景のターミナル専用に固定色を使う（cc-dashboard と同じ方針）。
+// 行は列幅をそろえずに詰めて並べるため、要素の切れ目が色で分かるよう要素ごとに色を変える。
 var (
 	separatorStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("117"))
 	faintStyle     = lipgloss.NewStyle().Faint(true)
-	repoStyle      = lipgloss.NewStyle().Bold(true)
-	textStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	repoStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))  // 青
+	actionStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // 橙。承認・マージなどは eventStyle で別の色にする
+	// シアン。桃系（213 など）は 16 色の端末でマージ済みの紫と同じマゼンタに丸められ、見分けられなくなる。
+	userStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
+	textStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 
 	openStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	draftStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
@@ -48,20 +46,12 @@ func RenderBatches(batches []timeline.Batch, viewer string, width int) string {
 }
 
 // RenderBatch は 1 回のポーリング分を "--- HH:MM ---" の区切り行に続けて、
-// 1 イベント 1 行の "時刻 アクション ユーザー 詳細" の形で新しい順に描画する。
+// 1 イベント 1 行の "owner/repo PR#123 時刻 アクション ユーザー タイトル" の形で新しい順に描画する。
 // prevCheckedAt は 1 つ前（時刻が古い側）の Batch の時刻で、日付が変わったときだけ区切り行に日付を出す。
 func RenderBatch(b timeline.Batch, prevCheckedAt time.Time, viewer string, width int) string {
-	rows := batchRows(b)
-
-	// 時刻の列は、前日以前のイベント（-since を長く指定した初回など）を含む回だけ日付付きの幅にする。
-	timeWidth := 0
-	for _, r := range rows {
-		timeWidth = max(timeWidth, len(formatEventTime(r.At, b.CheckedAt)))
-	}
-
 	lines := []string{separator(b.CheckedAt, prevCheckedAt)}
-	for _, r := range rows {
-		lines = append(lines, renderRow(r, b.CheckedAt, timeWidth, viewer))
+	for _, r := range batchRows(b) {
+		lines = append(lines, renderRow(r, b.CheckedAt, viewer))
 	}
 	if width > 0 {
 		// viewport は長い行を折り返さずにはみ出させるため、表示幅で切り詰める。
@@ -111,48 +101,39 @@ func batchRows(b timeline.Batch) []row {
 // eventUpdated は個別のイベントを取得できなかった更新を表す、表示専用の種類。
 const eventUpdated github.EventType = -1
 
-func renderRow(r row, checkedAt time.Time, timeWidth int, viewer string) string {
-	timeCell := lipgloss.NewStyle().Width(timeWidth).Render(formatEventTime(r.At, checkedAt))
-	actionCell := lipgloss.NewStyle().Width(actionColWidth).Render(actionLabel(r.displayEvent))
-	userCell := lipgloss.NewStyle().Width(userColWidth).Render(ansi.Truncate(r.Actor, userColWidth-1, "…"))
-	detail := renderDetail(r)
-
-	if r.Actor == viewer {
-		// 自分の操作は、他の人の動きより目立たないようにする。
-		// 隠さないのは、自分の push が CI の再実行やレビューの再依頼につながる場面もあり、
-		// 時系列の文脈として残しておきたいため。
-		return faintStyle.Render(strings.Join([]string{timeCell, actionCell, userCell, ansi.Strip(detail)}, " "))
-	}
-	return strings.Join([]string{
-		faintStyle.Render(timeCell),
-		eventStyle(r.Type).Render(actionCell),
-		textStyle.Render(userCell),
-		detail,
-	}, " ")
-}
-
-// renderDetail は "PR owner/repo#123 → bob, carol Title" の形で、どの PR / issue かを描画する。
-// 種別ラベルは PR / issue の状態（open / draft / merged / closed）の色で塗る。
-func renderDetail(r row) string {
+// renderRow は "owner/repo PR#123 14:01 review requested dave → you, erin Fix typo" の形の 1 行を描画する。
+// PR#123 / IS#45 の部分は PR / issue の状態（open / draft / merged / closed）の色で塗る。
+func renderRow(r row, checkedAt time.Time, viewer string) string {
 	item := r.Item
 	kind := "IS"
 	if item.Kind == github.KindPullRequest {
 		kind = "PR"
 	}
 	parts := []string{
-		itemStateStyle(item).Render(kind),
-		repoStyle.Render(fmt.Sprintf("%s#%d", item.Repo, item.Number)),
+		repoStyle.Render(item.Repo),
+		itemStateStyle(item).Bold(true).Render(fmt.Sprintf("%s#%d", kind, item.Number)),
+		faintStyle.Render(formatEventTime(r.At, checkedAt)),
+		eventStyle(r.Type).Render(actionLabel(r.displayEvent)),
+		userStyle.Render(r.Actor),
 	}
 	// 依頼先・アサイン先はタイトルより前に置く。長いタイトルが切り詰められても残るようにするため。
 	if r.Type == github.EventReviewRequested || r.Type == github.EventAssigned {
 		// 依頼先のアカウントが削除済みなどで取れなかった分は出さない
 		targets := slices.DeleteFunc(slices.Clone(r.Targets), func(t string) bool { return t == "" })
 		if len(targets) > 0 {
-			parts = append(parts, textStyle.Render("→ "+strings.Join(targets, ", ")))
+			parts = append(parts, faintStyle.Render("→")+" "+userStyle.Render(strings.Join(targets, ", ")))
 		}
 	}
 	parts = append(parts, textStyle.Render(item.Title))
-	return strings.Join(parts, " ")
+	line := strings.Join(parts, " ")
+
+	if r.Actor == viewer {
+		// 自分の操作は、他の人の動きより目立たないようにする。
+		// 隠さないのは、自分の push が CI の再実行やレビューの再依頼につながる場面もあり、
+		// 時系列の文脈として残しておきたいため。
+		return faintStyle.Render(ansi.Strip(line))
+	}
+	return line
 }
 
 func itemStateStyle(item github.Item) lipgloss.Style {
@@ -218,7 +199,7 @@ func newDisplayEvent(ev github.Event) displayEvent {
 	return displayEvent{Event: ev, Count: 1, Targets: []string{ev.Target}}
 }
 
-// actionLabel はアクションの列に出す文字列。actionColWidth に収まる長さにする。
+// actionLabel は行のアクション部分に出す文字列。
 func actionLabel(ev displayEvent) string {
 	switch ev.Type {
 	case github.EventCommented:
@@ -270,7 +251,7 @@ func eventStyle(t github.EventType) lipgloss.Style {
 	case github.EventMerged:
 		return mergedStyle
 	}
-	return textStyle
+	return actionStyle
 }
 
 // formatEventTime はイベント時刻を出す。区切り行と同じ日なら時刻だけ、

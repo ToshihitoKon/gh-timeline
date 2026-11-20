@@ -6,16 +6,16 @@
 gh-timeline — @you
 checked 14:05 · next 14:10 · every 5m0s
 --- 14:05 ---
-14:03 closed             carol            IS owner/repo#45 Something broken
-14:01 review requested   dave             PR owner/repo#130 → you, erin Fix typo
+owner/repo IS#45 14:03 closed carol Something broken
+owner/repo PR#130 14:01 review requested dave → you, erin Fix typo
 
 --- 14:00 ---
-13:59 commented (2)      bob              PR owner/repo#123 Add feature
-13:58 approved           alice            PR owner/repo#123 Add feature
+owner/repo PR#123 13:59 commented (2) bob Add feature
+owner/repo PR#123 13:58 approved alice Add feature
 ↑/↓: scroll   g/G: top/bottom   r: refresh   q: quit
 ```
 
-各行は「時刻・アクション・ユーザー・詳細」の順に並ぶ。詳細には種別（`PR` / `IS`）、`リポジトリ#番号`、レビュー依頼先やアサイン先（`→` の後）、タイトルを出す。種別は PR / issue の状態（open: 緑、draft: 灰、merged: 紫、closed: 赤）で色分けする。
+各行は「リポジトリ・種別と番号・時刻・アクション・ユーザー・タイトル」の順に並ぶ。レビュー依頼先やアサイン先は `→` の後に出す。列幅はそろえず、要素ごとに色を変えて区切りが分かるようにしている。`PR#123` / `IS#45` は PR / issue の状態（open: 緑、draft: 灰、merged: 紫、closed: 赤）で色分けする。
 
 ## 主な機能
 
