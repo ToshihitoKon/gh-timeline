@@ -25,7 +25,7 @@ const minInterval = 30 * time.Second
 
 func main() {
 	interval := flag.Duration("interval", 5*time.Minute, "polling interval")
-	lookback := flag.Duration("since", 24*time.Hour, "how far back to look on the first poll")
+	lookback := flag.Duration("since", 30*time.Minute, "how far back to look on the first poll")
 	includeTeamReviews := flag.Bool("team-reviews", false, "also follow PRs whose review is requested from your teams")
 	dump := flag.Bool("dump", false, "print updates once and exit, without starting the TUI")
 	showVersion := flag.Bool("version", false, "print version and exit")

@@ -13,8 +13,8 @@ import (
 )
 
 // maxEventsPerEntry は 1 つの PR / issue について表示するイベントの上限。
-// 初回のポーリングでは lookback 分（既定 24 時間）のイベントがまとめて出るため、
-// 活発な PR 1 件で画面が埋まらないよう直近の分だけに絞る。
+// -since を長く指定した初回のポーリングや、bot が短時間に連投した PR で
+// 1 件が画面を埋めないよう、直近の分だけに絞る。
 const maxEventsPerEntry = 5
 
 // eventIndent はイベント行の字下げ。PR / issue の行の種別ラベル（"PR " / "IS "）と同じ幅にして、

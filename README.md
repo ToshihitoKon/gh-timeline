@@ -44,14 +44,14 @@ go install github.com/ToshihitoKon/gh-timeline/cmd/gh-timeline@latest
 gh-timeline
 ```
 
-起動直後に過去 24 時間分の更新を表示し、その後は 5 分ごとに新しい更新を追記する。
+起動直後に過去 30 分間の更新を表示し、その後は 5 分ごとに新しい更新を追記する。
 
 ### フラグ
 
 - `-interval`
   - ポーリング間隔（既定: `5m`、下限: `30s`）
 - `-since`
-  - 初回のポーリングでさかのぼる幅（既定: `24h`）
+  - 初回のポーリングでさかのぼる幅（既定: `30m`）
 - `-team-reviews`
   - 所属チーム宛てのレビュー依頼も対象にする
 - `-dump`
