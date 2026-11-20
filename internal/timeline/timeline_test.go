@@ -67,12 +67,11 @@ func TestTrackerApply_NewItemShowsEventsWithinSearchWindow(t *testing.T) {
 	}
 }
 
-func TestTrackerApply_SortsEntriesOldestFirst(t *testing.T) {
+func TestTrackerApply_SortsEntriesNewestFirst(t *testing.T) {
 	tr := NewTracker(time.Hour)
-	// 検索結果は新しい順で返る
 	batch := tr.Apply(at(0), at(-60), []github.Item{
-		pr(2, -1, comment("x", -1)),
-		pr(1, -20, comment("y", -20)),
+		pr(2, -5, comment("x", -5)),
+		pr(1, -1, comment("y", -1)),
 	})
 	if batch.Entries[0].Item.Number != 1 || batch.Entries[1].Item.Number != 2 {
 		t.Errorf("order = #%d, #%d; want #1 then #2", batch.Entries[0].Item.Number, batch.Entries[1].Item.Number)

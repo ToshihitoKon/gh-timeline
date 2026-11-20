@@ -5,14 +5,14 @@
 ```text
 gh-timeline — @you
 checked 14:05 · next 14:10 · every 5m0s
+--- 14:05 ---
+IS owner/repo#45 closed Something broken (assignee)
+   14:03  carol closed
+
 --- 14:00 ---
 PR owner/repo#123 open Add feature (author)
    13:58  alice approved
    13:59  bob commented (2)
-
---- 14:05 ---
-IS owner/repo#45 closed Something broken (assignee)
-   14:03  carol closed
 ↑/↓: scroll   g/G: top/bottom   r: refresh   q: quit
 ```
 
@@ -23,7 +23,7 @@ IS owner/repo#45 closed Something broken (assignee)
   - 自分がアサインされている PR / issue
   - 自分個人にレビューが依頼されている PR（`-team-reviews` でチーム宛ての依頼も対象にする）
   - 自分がレビューした PR（レビュー後の作者の返信や追加コミットを追うため）
-- 更新が見つかったときだけ `--- HH:MM ---` の区切り行を挟んで末尾に追記する。日付が変わると `--- 11/21 09:00 ---` のように日付も出す
+- 更新が見つかったときだけ `--- HH:MM ---` の区切り行を挟んで先頭に追記する（新しい更新ほど上）。日付が変わると `--- 11/21 09:00 ---` のように日付も出す
 - 更新ごとに、前回の表示以降のコメント・レビュー・コミット・マージなどのイベントを並べる
   - 同じ人の連続したコメントやレビュー依頼は 1 行にまとめる
   - 自分の操作だけによる更新は薄く表示する
@@ -66,7 +66,7 @@ gh-timeline
 - `r`: 次のポーリングを待たずに今すぐ取得する
 - `q` / `Ctrl+C`: 終了
 
-末尾を表示している間は、新しい更新が追記されると自動で末尾に追従する。過去にスクロールしている間は位置を動かさない。
+先頭を表示している間は、新しい更新が追記されると自動で先頭に追従する。過去の分にスクロールしている間は、読んでいる行が画面上で動かないよう表示位置を保つ。
 
 ## 制限
 

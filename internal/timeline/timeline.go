@@ -50,7 +50,7 @@ func (e Entry) IsOnlyBy(login string) bool {
 // Batch は 1 回のポーリングで見つかった更新のまとまり。
 type Batch struct {
 	CheckedAt time.Time
-	Entries   []Entry // 古い順
+	Entries   []Entry // 新しい順
 }
 
 // Tracker は表示済みの更新を覚えておき、新しい更新だけを Batch にする。
@@ -94,7 +94,7 @@ func (t *Tracker) Apply(startedAt, since time.Time, items []github.Item) Batch {
 		batch.Entries = append(batch.Entries, Entry{Item: item, Events: eventsAfter(item.Events, lowerBound)})
 	}
 	sort.SliceStable(batch.Entries, func(i, j int) bool {
-		return batch.Entries[i].LatestAt().Before(batch.Entries[j].LatestAt())
+		return batch.Entries[i].LatestAt().After(batch.Entries[j].LatestAt())
 	})
 	t.lastStartedAt = startedAt
 	return batch

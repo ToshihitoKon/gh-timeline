@@ -169,6 +169,44 @@ func TestModel_FetchAppendsBatchOnlyWhenUpdated(t *testing.T) {
 	}
 }
 
+func batchAt(hh, mm int) timeline.Batch {
+	return timeline.Batch{
+		CheckedAt: time.Date(2026, 11, 20, hh, mm, 0, 0, jst),
+		Entries:   []timeline.Entry{entry(ev(github.EventCommented, "alice", hh, mm-1))},
+	}
+}
+
+func TestRenderBatches_NewestBatchOnTop(t *testing.T) {
+	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), batchAt(11, 50)}, "me", 0))
+	if first, second := strings.Index(got, "--- 11:50 ---"), strings.Index(got, "--- 11:45 ---"); first != 0 || second < first {
+		t.Errorf("want 11:50 block first, got\n%s", got)
+	}
+}
+
+func TestModel_ScrollFollowsTopOrKeepsReadingPosition(t *testing.T) {
+	m := NewModel(fakeFetcher{}, timeline.NewTracker(time.Hour), 5*time.Minute)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: chromeLines + 3})
+	m = next.(Model)
+	m.batches = []timeline.Batch{batchAt(11, 40), batchAt(11, 45)}
+	m.refreshContent()
+
+	// 先頭を見ている間は、追記されても先頭に留まる
+	m.batches = append(m.batches, batchAt(11, 50))
+	m.refreshContent()
+	if m.viewport.YOffset != 0 {
+		t.Errorf("YOffset = %d, want 0 while following the top", m.viewport.YOffset)
+	}
+
+	// 過去を読んでいる間は、同じ行が見え続けるようオフセットをずらす
+	m.viewport.SetYOffset(5)
+	before := m.viewport.View()
+	m.batches = append(m.batches, batchAt(11, 55))
+	m.refreshContent()
+	if after := m.viewport.View(); after != before {
+		t.Errorf("visible lines changed while reading older updates:\nbefore\n%s\nafter\n%s", before, after)
+	}
+}
+
 func TestModel_StalePollTickIgnoredAfterManualRefresh(t *testing.T) {
 	m := newReadyModel(fakeFetcher{})
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})

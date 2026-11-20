@@ -2,7 +2,7 @@
 //
 // 画面は上から順に、タイトル・状態行・タイムライン（viewport）・フッタの 4 段。
 // タイムラインは追記専用で、ポーリングで更新が見つかるたびに
-// "--- HH:MM ---" の区切り行から始まるまとまりを末尾に足していく。
+// "--- HH:MM ---" の区切り行から始まるまとまりを先頭に足していく。
 package ui
 
 import (
@@ -180,17 +180,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// refreshContent は viewport の内容を作り直す。末尾を表示していた場合は
-// 追記後も末尾に追従させ、過去を遡って読んでいる最中なら位置を動かさない。
+// refreshContent は viewport の内容を作り直す。先頭を表示していた場合は
+// 追記後も先頭に追従させる。過去の分を読んでいる最中は、先頭に足された行数だけ
+// オフセットをずらし、読んでいた行が画面上で動かないようにする。
+//
+// 行数の差をそのまま先頭への追加分とみなせるのは、追記が先頭にしか起きず、
+// 端末幅の変更では行を折り返さず切り詰めるため行数が変わらないから。
 func (m *Model) refreshContent() {
 	if !m.ready {
 		return
 	}
-	wasAtBottom := m.viewport.AtBottom()
+	wasAtTop := m.viewport.AtTop()
+	prevLines := m.viewport.TotalLineCount()
+	prevOffset := m.viewport.YOffset
 	m.viewport.SetContent(m.renderTimeline())
-	if wasAtBottom {
-		m.viewport.GotoBottom()
+	if wasAtTop {
+		m.viewport.GotoTop()
+		return
 	}
+	m.viewport.SetYOffset(prevOffset + m.viewport.TotalLineCount() - prevLines)
 }
 
 func (m Model) renderTimeline() string {

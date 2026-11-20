@@ -34,21 +34,22 @@ var (
 	closedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 )
 
-// RenderBatches は全 Batch を区切り行付きで描画する。width が 0 以下なら行を切り詰めない。
+// RenderBatches は全 Batch を区切り行付きで、新しいものを上にして描画する。
+// batches は古い順で渡す。width が 0 以下なら行を切り詰めない。
 func RenderBatches(batches []timeline.Batch, viewer string, width int) string {
-	var blocks []string
-	for i, b := range batches {
+	blocks := make([]string, 0, len(batches))
+	for i := len(batches) - 1; i >= 0; i-- {
 		var prev time.Time
 		if i > 0 {
 			prev = batches[i-1].CheckedAt
 		}
-		blocks = append(blocks, RenderBatch(b, prev, viewer, width))
+		blocks = append(blocks, RenderBatch(batches[i], prev, viewer, width))
 	}
 	return strings.Join(blocks, "\n\n")
 }
 
 // RenderBatch は 1 回のポーリング分を "--- HH:MM ---" の区切り行に続けて描画する。
-// prevCheckedAt は直前の Batch の時刻で、日付が変わったときだけ区切り行に日付を出す。
+// prevCheckedAt は 1 つ前（時刻が古い側）の Batch の時刻で、日付が変わったときだけ区切り行に日付を出す。
 func RenderBatch(b timeline.Batch, prevCheckedAt time.Time, viewer string, width int) string {
 	lines := []string{separator(b.CheckedAt, prevCheckedAt)}
 	for _, e := range b.Entries {
