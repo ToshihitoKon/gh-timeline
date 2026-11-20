@@ -59,7 +59,7 @@ func TestParseResponse_MergesRolesAndSortsByUpdatedAt(t *testing.T) {
 		t.Errorf("order = %s, %s; want o/r#2 (newer) first", got.Items[0].Key(), got.Items[1].Key())
 	}
 	if pr := got.Items[1]; pr.Roles != RoleAuthor|RoleReviewed {
-		t.Errorf("PR roles = %v, want author|reviewed", pr.Roles.Labels())
+		t.Errorf("PR roles = %b, want author|reviewed", pr.Roles)
 	}
 }
 

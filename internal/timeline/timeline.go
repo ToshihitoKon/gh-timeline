@@ -33,20 +33,6 @@ func (e Entry) LatestAt() time.Time {
 	return e.Item.UpdatedAt
 }
 
-// IsOnlyBy は Entry のイベントがすべて login によるものかを返す。
-// イベントが無い場合は誰の操作か分からないため false。
-func (e Entry) IsOnlyBy(login string) bool {
-	if len(e.Events) == 0 {
-		return false
-	}
-	for _, ev := range e.Events {
-		if ev.Actor != login {
-			return false
-		}
-	}
-	return true
-}
-
 // Batch は 1 回のポーリングで見つかった更新のまとまり。
 type Batch struct {
 	CheckedAt time.Time

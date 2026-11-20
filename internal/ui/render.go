@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,14 +14,11 @@ import (
 	"github.com/ToshihitoKon/gh-timeline/internal/timeline"
 )
 
-// maxEventsPerEntry は 1 つの PR / issue について表示するイベントの上限。
-// -since を長く指定した初回のポーリングや、bot が短時間に連投した PR で
-// 1 件が画面を埋めないよう、直近の分だけに絞る。
-const maxEventsPerEntry = 5
-
-// eventIndent はイベント行の字下げ。PR / issue の行の種別ラベル（"PR " / "IS "）と同じ幅にして、
-// イベントの時刻がリポジトリ名の先頭にそろうようにする。
-const eventIndent = "   "
+// 列幅。区切りをまたいでも列がそろうよう、回ごとの最大幅ではなく固定幅にする。
+const (
+	actionColWidth = 18 // 最長のラベル "converted to draft" に合わせる
+	userColWidth   = 16 // GitHub の login は最大 39 文字だが、詳細の列を残すため長いものは切り詰める
+)
 
 // 現状はダーク背景のターミナル専用に固定色を使う（cc-dashboard と同じ方針）。
 var (
@@ -48,12 +47,21 @@ func RenderBatches(batches []timeline.Batch, viewer string, width int) string {
 	return strings.Join(blocks, "\n\n")
 }
 
-// RenderBatch は 1 回のポーリング分を "--- HH:MM ---" の区切り行に続けて描画する。
+// RenderBatch は 1 回のポーリング分を "--- HH:MM ---" の区切り行に続けて、
+// 1 イベント 1 行の "時刻 アクション ユーザー 詳細" の形で新しい順に描画する。
 // prevCheckedAt は 1 つ前（時刻が古い側）の Batch の時刻で、日付が変わったときだけ区切り行に日付を出す。
 func RenderBatch(b timeline.Batch, prevCheckedAt time.Time, viewer string, width int) string {
+	rows := batchRows(b)
+
+	// 時刻の列は、前日以前のイベント（-since を長く指定した初回など）を含む回だけ日付付きの幅にする。
+	timeWidth := 0
+	for _, r := range rows {
+		timeWidth = max(timeWidth, len(formatEventTime(r.At, b.CheckedAt)))
+	}
+
 	lines := []string{separator(b.CheckedAt, prevCheckedAt)}
-	for _, e := range b.Entries {
-		lines = append(lines, renderEntry(e, b.CheckedAt, viewer)...)
+	for _, r := range rows {
+		lines = append(lines, renderRow(r, b.CheckedAt, timeWidth, viewer))
 	}
 	if width > 0 {
 		// viewport は長い行を折り返さずにはみ出させるため、表示幅で切り詰める。
@@ -72,61 +80,96 @@ func separator(checkedAt, prevCheckedAt time.Time) string {
 	return separatorStyle.Render("--- " + label + " ---")
 }
 
-func renderEntry(e timeline.Entry, checkedAt time.Time, viewer string) []string {
-	item := e.Item
-	isSelfOnly := e.IsOnlyBy(viewer)
+// row は表示する 1 行。どの PR / issue のイベントかを持つ。
+type row struct {
+	displayEvent
+	Item github.Item
+}
 
+// batchRows は Batch 内の全 PR / issue のイベントを 1 列に並べ、新しい順にする。
+func batchRows(b timeline.Batch) []row {
+	var rows []row
+	for _, e := range b.Entries {
+		if len(e.Events) == 0 {
+			// タイトル・本文の編集など、取得対象外の操作だけで更新された場合。誰の操作かは分からない。
+			rows = append(rows, row{displayEvent: displayEvent{Event: github.Event{Type: eventUpdated, Actor: "-", At: e.Item.UpdatedAt}, Count: 1}, Item: e.Item})
+			continue
+		}
+		for _, ev := range collapseEvents(e.Events) {
+			rows = append(rows, row{displayEvent: ev, Item: e.Item})
+		}
+	}
+	// 同じ分に記録されたイベント（PR 作成時のレビュー依頼とアサインなど）も新しい順にそろうよう、
+	// 古い順に集めた rows を反転してから安定ソートする。
+	slices.Reverse(rows)
+	sort.SliceStable(rows, func(i, j int) bool {
+		return rows[i].At.After(rows[j].At)
+	})
+	return rows
+}
+
+// eventUpdated は個別のイベントを取得できなかった更新を表す、表示専用の種類。
+const eventUpdated github.EventType = -1
+
+func renderRow(r row, checkedAt time.Time, timeWidth int, viewer string) string {
+	timeCell := lipgloss.NewStyle().Width(timeWidth).Render(formatEventTime(r.At, checkedAt))
+	actionCell := lipgloss.NewStyle().Width(actionColWidth).Render(actionLabel(r.displayEvent))
+	userCell := lipgloss.NewStyle().Width(userColWidth).Render(ansi.Truncate(r.Actor, userColWidth-1, "…"))
+	detail := renderDetail(r)
+
+	if r.Actor == viewer {
+		// 自分の操作は、他の人の動きより目立たないようにする。
+		// 隠さないのは、自分の push が CI の再実行やレビューの再依頼につながる場面もあり、
+		// 時系列の文脈として残しておきたいため。
+		return faintStyle.Render(strings.Join([]string{timeCell, actionCell, userCell, ansi.Strip(detail)}, " "))
+	}
+	return strings.Join([]string{
+		faintStyle.Render(timeCell),
+		eventStyle(r.Type).Render(actionCell),
+		textStyle.Render(userCell),
+		detail,
+	}, " ")
+}
+
+// renderDetail は "PR owner/repo#123 → bob, carol Title" の形で、どの PR / issue かを描画する。
+// 種別ラベルは PR / issue の状態（open / draft / merged / closed）の色で塗る。
+func renderDetail(r row) string {
+	item := r.Item
 	kind := "IS"
 	if item.Kind == github.KindPullRequest {
 		kind = "PR"
 	}
-	stateLabel, stateStyle := itemState(item)
-	head := strings.Join([]string{
-		stateStyle.Render(kind),
+	parts := []string{
+		itemStateStyle(item).Render(kind),
 		repoStyle.Render(fmt.Sprintf("%s#%d", item.Repo, item.Number)),
-		stateStyle.Render(stateLabel),
-		textStyle.Render(item.Title),
-		faintStyle.Render("(" + strings.Join(item.Roles.Labels(), ", ") + ")"),
-	}, " ")
-	if isSelfOnly {
-		// 自分の操作だけによる更新は、他の人の動きより目立たないようにする。
-		// 隠さないのは、自分の push が CI の再実行やレビューの再依頼につながる場面もあり、
-		// 時系列の文脈として残しておきたいため。
-		head = faintStyle.Render(ansi.Strip(head))
 	}
-
-	lines := []string{head}
-	if len(e.Events) == 0 {
-		return append(lines, eventIndent+faintStyle.Render(formatEventTime(item.UpdatedAt, checkedAt)+"  updated"))
+	// 依頼先・アサイン先はタイトルより前に置く。長いタイトルが切り詰められても残るようにするため。
+	if r.Type == github.EventReviewRequested || r.Type == github.EventAssigned {
+		// 依頼先のアカウントが削除済みなどで取れなかった分は出さない
+		targets := slices.DeleteFunc(slices.Clone(r.Targets), func(t string) bool { return t == "" })
+		if len(targets) > 0 {
+			parts = append(parts, textStyle.Render("→ "+strings.Join(targets, ", ")))
+		}
 	}
-
-	events := collapseEvents(e.Events)
-	if hidden := len(events) - maxEventsPerEntry; hidden > 0 {
-		lines = append(lines, eventIndent+faintStyle.Render(fmt.Sprintf("… %d earlier", hidden)))
-		events = events[hidden:]
-	}
-	for _, ev := range events {
-		lines = append(lines, eventIndent+renderEvent(ev, checkedAt, viewer))
-	}
-	return lines
+	parts = append(parts, textStyle.Render(item.Title))
+	return strings.Join(parts, " ")
 }
 
-// itemState は PR / issue の状態ラベルと色を返す。
-func itemState(item github.Item) (string, lipgloss.Style) {
+func itemStateStyle(item github.Item) lipgloss.Style {
 	switch item.State {
 	case "MERGED":
-		return "merged", mergedStyle
+		return mergedStyle
 	case "CLOSED":
 		if item.Kind == github.KindIssue && item.StateReason == "COMPLETED" {
 			// GitHub の表示に合わせ、完了で閉じた issue はマージ済み PR と同じ紫にする。
-			return "closed", mergedStyle
+			return mergedStyle
 		}
-		return "closed", closedStyle
+		return closedStyle
 	}
 	if item.IsDraft {
-		return "draft", draftStyle
+		return draftStyle
 	}
-	return "open", openStyle
+	return openStyle
 }
 
 // displayEvent は表示用にまとめたイベント。
@@ -175,23 +218,15 @@ func newDisplayEvent(ev github.Event) displayEvent {
 	return displayEvent{Event: ev, Count: 1, Targets: []string{ev.Target}}
 }
 
-func renderEvent(ev displayEvent, checkedAt time.Time, viewer string) string {
-	at := formatEventTime(ev.At, checkedAt)
-	text := ev.Actor + " " + describeEvent(ev)
-	if ev.Actor == viewer {
-		return faintStyle.Render(at + "  " + text)
-	}
-	return faintStyle.Render(at) + "  " + eventStyle(ev.Type).Render(text)
-}
-
-func describeEvent(ev displayEvent) string {
+// actionLabel はアクションの列に出す文字列。actionColWidth に収まる長さにする。
+func actionLabel(ev displayEvent) string {
 	switch ev.Type {
 	case github.EventCommented:
 		return withCount("commented", ev.Count)
 	case github.EventApproved:
 		return "approved"
 	case github.EventChangesRequested:
-		return "requested changes"
+		return "changes requested"
 	case github.EventReviewed:
 		return withCount("reviewed", ev.Count)
 	case github.EventCommitted:
@@ -206,15 +241,15 @@ func describeEvent(ev displayEvent) string {
 	case github.EventReopened:
 		return "reopened"
 	case github.EventReviewRequested:
-		return "requested review from " + strings.Join(ev.Targets, ", ")
+		return "review requested"
 	case github.EventReadyForReview:
-		return "marked as ready for review"
+		return "ready for review"
 	case github.EventConvertedToDraft:
 		return "converted to draft"
 	case github.EventForcePushed:
 		return "force-pushed"
 	case github.EventAssigned:
-		return "assigned " + ev.Target
+		return "assigned"
 	}
 	return "updated"
 }
@@ -239,7 +274,7 @@ func eventStyle(t github.EventType) lipgloss.Style {
 }
 
 // formatEventTime はイベント時刻を出す。区切り行と同じ日なら時刻だけ、
-// 違う日（初回の lookback でさかのぼった分など）は日付も付ける。
+// 違う日（-since でさかのぼった分など）は日付も付ける。
 func formatEventTime(at, checkedAt time.Time) string {
 	at = at.In(checkedAt.Location())
 	if sameDay(at, checkedAt) {

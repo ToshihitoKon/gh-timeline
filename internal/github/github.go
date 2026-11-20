@@ -39,25 +39,6 @@ const (
 	RoleReviewed
 )
 
-// Labels は表示用のラベルを固定の順序で返す。
-func (r Role) Labels() []string {
-	var labels []string
-	for _, l := range []struct {
-		role  Role
-		label string
-	}{
-		{RoleAuthor, "author"},
-		{RoleAssignee, "assignee"},
-		{RoleReviewRequested, "review requested"},
-		{RoleReviewed, "reviewed"},
-	} {
-		if r&l.role != 0 {
-			labels = append(labels, l.label)
-		}
-	}
-	return labels
-}
-
 // EventType はタイムラインイベントの種類。
 type EventType int
 

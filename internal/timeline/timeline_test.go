@@ -77,22 +77,3 @@ func TestTrackerApply_SortsEntriesNewestFirst(t *testing.T) {
 		t.Errorf("order = #%d, #%d; want #1 then #2", batch.Entries[0].Item.Number, batch.Entries[1].Item.Number)
 	}
 }
-
-func TestEntryIsOnlyBy(t *testing.T) {
-	tests := []struct {
-		name   string
-		events []github.Event
-		want   bool
-	}{
-		{"all mine", []github.Event{comment("me", 0), comment("me", 1)}, true},
-		{"mixed", []github.Event{comment("me", 0), comment("alice", 1)}, false},
-		{"no events", nil, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := (Entry{Events: tt.events}).IsOnlyBy("me"); got != tt.want {
-				t.Errorf("IsOnlyBy = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}

@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -30,21 +31,33 @@ func ev(t github.EventType, actor string, hh, mm int) github.Event {
 	return github.Event{Type: t, Actor: actor, At: time.Date(2026, 11, 20, hh, mm, 0, 0, jst)}
 }
 
-func TestRenderBatch_SeparatorAndEvents(t *testing.T) {
+// wantRow は "時刻 アクション ユーザー 詳細" の 1 行を、固定の列幅で組み立てる。
+func wantRow(at, action, user, detail string) string {
+	return fmt.Sprintf("%-*s %-*s %-*s %s", len(at), at, actionColWidth, action, userColWidth, user, detail)
+}
+
+func TestRenderBatch_OneRowPerEventNewestFirst(t *testing.T) {
+	other := entry(ev(github.EventCommented, "bob", 13, 55))
+	other.Item.Kind = github.KindIssue
+	other.Item.Number = 8
+	other.Item.Title = "Bug"
 	b := timeline.Batch{
 		CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
-		Entries: []timeline.Entry{entry(
-			ev(github.EventCommitted, "me", 13, 50),
-			ev(github.EventCommitted, "me", 13, 51),
-			ev(github.EventApproved, "alice", 14, 0),
-		)},
+		Entries: []timeline.Entry{
+			entry(
+				ev(github.EventCommitted, "me", 13, 50),
+				ev(github.EventCommitted, "me", 13, 51),
+				ev(github.EventApproved, "alice", 14, 0),
+			),
+			other,
+		},
 	}
 	got := ansi.Strip(RenderBatch(b, time.Time{}, "me", 0))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
-		"PR o/r#7 open Add feature (author)",
-		"   13:51  me pushed 2 commits",
-		"   14:00  alice approved",
+		wantRow("14:00", "approved", "alice", "PR o/r#7 Add feature"),
+		wantRow("13:55", "commented", "bob", "IS o/r#8 Bug"), // 別の PR / issue のイベントも時刻順に混ざる
+		wantRow("13:51", "pushed 2 commits", "me", "PR o/r#7 Add feature"),
 	}, "\n")
 	if got != want {
 		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
@@ -71,10 +84,9 @@ func TestRenderBatch_CollapsesNoisyEvents(t *testing.T) {
 	got := ansi.Strip(RenderBatch(b, time.Time{}, "me", 0))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
-		"PR o/r#7 open Add feature (author)",
-		"   13:00  alice requested review from bob, carol",
-		"   13:11  bot commented (2)",
-		"   13:12  bot merged",
+		wantRow("13:12", "merged", "bot", "PR o/r#7 Add feature"),
+		wantRow("13:11", "commented (2)", "bot", "PR o/r#7 Add feature"),
+		wantRow("13:00", "review requested", "alice", "PR o/r#7 → bob, carol Add feature"),
 	}, "\n")
 	if got != want {
 		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
@@ -83,30 +95,48 @@ func TestRenderBatch_CollapsesNoisyEvents(t *testing.T) {
 
 func TestRenderBatch_DateShownWhenDayChanges(t *testing.T) {
 	prev := time.Date(2026, 11, 19, 23, 58, 0, 0, jst)
-	b := timeline.Batch{CheckedAt: time.Date(2026, 11, 20, 0, 3, 0, 0, jst), Entries: []timeline.Entry{entry()}}
-	got := ansi.Strip(RenderBatch(b, prev, "me", 0))
-	if !strings.HasPrefix(got, "--- 11/20 00:03 ---") {
-		t.Errorf("separator = %q, want date on day change", strings.SplitN(got, "\n", 2)[0])
+	yesterday := github.Event{Type: github.EventCommented, Actor: "alice", At: time.Date(2026, 11, 19, 23, 59, 0, 0, jst)}
+	b := timeline.Batch{
+		CheckedAt: time.Date(2026, 11, 20, 0, 3, 0, 0, jst),
+		Entries:   []timeline.Entry{entry(), entry(yesterday)},
 	}
-	// イベントの無い更新は updatedAt を "updated" として出す
-	if !strings.HasSuffix(got, "\n   14:00  updated") {
-		t.Errorf("want fallback 'updated' line, got\n%s", got)
+	got := ansi.Strip(RenderBatch(b, prev, "me", 0))
+	want := strings.Join([]string{
+		"--- 11/20 00:03 ---",
+		// イベントの無い更新は updatedAt を "updated" として、誰の操作か分からないので "-" で出す
+		wantRow("14:00      ", "updated", "-", "PR o/r#7 Add feature"),
+		wantRow("11/19 23:59", "commented", "alice", "PR o/r#7 Add feature"),
+	}, "\n")
+	if got != want {
+		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
 	}
 }
 
-func TestRenderBatch_LimitsEventsPerEntry(t *testing.T) {
-	var events []github.Event
-	// 1 行にまとめられないよう、投稿者を交互にする
-	for i := range maxEventsPerEntry + 2 {
-		events = append(events, ev(github.EventCommented, []string{"alice", "bob"}[i%2], 13, i))
+func TestRenderBatch_SameMinuteEventsNewestFirstAndEmptyTargetOmitted(t *testing.T) {
+	requested := ev(github.EventReviewRequested, "alice", 13, 0) // 依頼先が取れなかった（Target が空）
+	assigned := ev(github.EventAssigned, "alice", 13, 0)
+	assigned.Target = "alice"
+	b := timeline.Batch{
+		CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
+		Entries:   []timeline.Entry{entry(requested, assigned)},
 	}
-	b := timeline.Batch{CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst), Entries: []timeline.Entry{entry(events...)}}
 	got := ansi.Strip(RenderBatch(b, time.Time{}, "me", 0))
-	if !strings.Contains(got, "… 2 earlier") {
-		t.Errorf("want '… 2 earlier', got\n%s", got)
+	want := strings.Join([]string{
+		"--- 14:05 ---",
+		wantRow("13:00", "assigned", "alice", "PR o/r#7 → alice Add feature"),
+		wantRow("13:00", "review requested", "alice", "PR o/r#7 Add feature"),
+	}, "\n")
+	if got != want {
+		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
 	}
-	if n := strings.Count(got, " commented"); n != maxEventsPerEntry {
-		t.Errorf("shown events = %d, want %d", n, maxEventsPerEntry)
+}
+
+func TestRenderBatch_TruncatesLongUserName(t *testing.T) {
+	long := strings.Repeat("x", userColWidth+5)
+	b := timeline.Batch{CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst), Entries: []timeline.Entry{entry(ev(github.EventCommented, long, 14, 0))}}
+	got := ansi.Strip(RenderBatch(b, time.Time{}, "me", 0))
+	if want := wantRow("14:00", "commented", strings.Repeat("x", userColWidth-2)+"…", "PR o/r#7 Add feature"); !strings.HasSuffix(got, want) {
+		t.Errorf("RenderBatch =\n%s\nwant suffix\n%s", got, want)
 	}
 }
 

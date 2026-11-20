@@ -6,15 +6,16 @@
 gh-timeline — @you
 checked 14:05 · next 14:10 · every 5m0s
 --- 14:05 ---
-IS owner/repo#45 closed Something broken (assignee)
-   14:03  carol closed
+14:03 closed             carol            IS owner/repo#45 Something broken
+14:01 review requested   dave             PR owner/repo#130 → you, erin Fix typo
 
 --- 14:00 ---
-PR owner/repo#123 open Add feature (author)
-   13:58  alice approved
-   13:59  bob commented (2)
+13:59 commented (2)      bob              PR owner/repo#123 Add feature
+13:58 approved           alice            PR owner/repo#123 Add feature
 ↑/↓: scroll   g/G: top/bottom   r: refresh   q: quit
 ```
+
+各行は「時刻・アクション・ユーザー・詳細」の順に並ぶ。詳細には種別（`PR` / `IS`）、`リポジトリ#番号`、レビュー依頼先やアサイン先（`→` の後）、タイトルを出す。種別は PR / issue の状態（open: 緑、draft: 灰、merged: 紫、closed: 赤）で色分けする。
 
 ## 主な機能
 
@@ -24,9 +25,9 @@ PR owner/repo#123 open Add feature (author)
   - 自分個人にレビューが依頼されている PR（`-team-reviews` でチーム宛ての依頼も対象にする）
   - 自分がレビューした PR（レビュー後の作者の返信や追加コミットを追うため）
 - 更新が見つかったときだけ `--- HH:MM ---` の区切り行を挟んで先頭に追記する（新しい更新ほど上）。日付が変わると `--- 11/21 09:00 ---` のように日付も出す
-- 更新ごとに、前回の表示以降のコメント・レビュー・コミット・マージなどのイベントを並べる
+- 前回の表示以降のコメント・レビュー・コミット・マージなどのイベントを、1 イベント 1 行で新しい順に並べる
   - 同じ人の連続したコメントやレビュー依頼は 1 行にまとめる
-  - 自分の操作だけによる更新は薄く表示する
+  - 自分の操作は薄く表示する
 
 ## 必要なもの
 
