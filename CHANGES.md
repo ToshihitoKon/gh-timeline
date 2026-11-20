@@ -3,7 +3,7 @@
 Breaking changes and how to migrate. Other changes are listed in the
 [release notes](https://github.com/ToshihitoKon/gh-timeline/releases).
 
-## Unreleased
+## v0.2.0
 
 - The timeline (in the TUI and `-dump`) now groups events by pull request or issue within each `--- HH:MM ---` block.
   - Before: one line per event, `14:01 owner/repo PR#130 review requested dave → you, erin Fix typo`
