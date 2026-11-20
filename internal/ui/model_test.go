@@ -30,7 +30,7 @@ func ev(t github.EventType, actor string, hh, mm int) github.Event {
 	return github.Event{Type: t, Actor: actor, At: time.Date(2026, 11, 20, hh, mm, 0, 0, jst)}
 }
 
-func TestRenderBatch_OneRowPerEventNewestFirst(t *testing.T) {
+func TestRenderBatch_GroupsEventsByItemNewestFirst(t *testing.T) {
 	other := entry(ev(github.EventCommented, "bob", 13, 55))
 	other.Item.Kind = github.KindIssue
 	other.Item.Number = 8
@@ -49,9 +49,11 @@ func TestRenderBatch_OneRowPerEventNewestFirst(t *testing.T) {
 	got := ansi.Strip(RenderBatch(b, time.Time{}, "me", 0))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
-		"14:00 o/r PR#7 approved alice Add feature",
-		"13:55 o/r IS#8 commented bob Bug", // 別の PR / issue のイベントも時刻順に混ざる
-		"13:51 o/r PR#7 pushed 2 commits me Add feature",
+		"o/r PR#7 Add feature", // 最新のイベントが新しい PR / issue が上
+		"  14:00 approved alice",
+		"  13:51 pushed 2 commits me",
+		"o/r IS#8 Bug",
+		"  13:55 commented bob",
 	}, "\n")
 	if got != want {
 		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
@@ -78,9 +80,10 @@ func TestRenderBatch_CollapsesNoisyEvents(t *testing.T) {
 	got := ansi.Strip(RenderBatch(b, time.Time{}, "me", 0))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
-		"13:12 o/r PR#7 merged bot Add feature",
-		"13:11 o/r PR#7 commented (2) bot Add feature",
-		"13:00 o/r PR#7 review requested alice → bob, carol Add feature",
+		"o/r PR#7 Add feature",
+		"  13:12 merged bot",
+		"  13:11 commented (2) bot",
+		"  13:00 review requested alice → bob, carol",
 	}, "\n")
 	if got != want {
 		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
@@ -98,8 +101,10 @@ func TestRenderBatch_DateShownWhenDayChanges(t *testing.T) {
 	want := strings.Join([]string{
 		"--- 11/20 00:03 ---",
 		// イベントの無い更新は updatedAt を "updated" として、誰の操作か分からないので "-" で出す
-		"14:00 o/r PR#7 updated - Add feature",
-		"11/19 23:59 o/r PR#7 commented alice Add feature",
+		"o/r PR#7 Add feature",
+		"  14:00 updated -",
+		"o/r PR#7 Add feature",
+		"  11/19 23:59 commented alice",
 	}, "\n")
 	if got != want {
 		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
@@ -117,8 +122,9 @@ func TestRenderBatch_SameMinuteEventsNewestFirstAndEmptyTargetOmitted(t *testing
 	got := ansi.Strip(RenderBatch(b, time.Time{}, "me", 0))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
-		"13:00 o/r PR#7 assigned alice → alice Add feature",
-		"13:00 o/r PR#7 review requested alice Add feature",
+		"o/r PR#7 Add feature",
+		"  13:00 assigned alice → alice",
+		"  13:00 review requested alice",
 	}, "\n")
 	if got != want {
 		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
