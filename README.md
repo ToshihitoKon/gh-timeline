@@ -26,20 +26,24 @@ gh-timeline polls GitHub every 5 minutes for pull requests and issues that:
 
 When a poll finds new activity, it adds a `--- HH:MM ---` block at the top of the timeline. Polls with no new activity add nothing. When the date changes, the separator includes it (`--- 11/21 09:00 ---`).
 
-Each line is one event, newest first:
+Within a block, events are grouped by pull request or issue. The one with the newest event comes first, and its events follow newest first:
 
 ```text
-14:01 owner/repo PR#130 review requested dave → you, erin Fix typo
+--- 14:05 ---
+owner/repo PR#130 Fix typo
+  14:03 approved erin
+  14:01 review requested dave → you, erin
+owner/repo IS#42 Crash on startup
+  13:58 commented frank
 ```
 
+- `owner/repo PR#130 Fix typo`: the repository, number (`IS#` for issues), and title. The number is colored by state: green for open, gray for draft, purple for merged, red for closed
 - `14:01`: when it happened (`11/19 23:59` if it was on an earlier day)
-- `owner/repo PR#130`: the repository and number (`IS#` for issues), colored by state: green for open, gray for draft, purple for merged, red for closed
 - `review requested`: the action
 - `dave`: who did it
 - `→ you, erin`: who was asked to review or assigned, for those actions
-- `Fix typo`: the title
 
-Consecutive events of the same kind by the same person are combined, such as `commented (3)` or `→ bob, carol`. Your own actions are dimmed.
+Consecutive events of the same kind by the same person are combined, such as `commented (3)` or `→ bob, carol`. Your own actions are dimmed, and so is the heading when all of its events are yours.
 
 Actions:
 
