@@ -3,6 +3,13 @@
 Breaking changes and how to migrate. Other changes are listed in the
 [release notes](https://github.com/ToshihitoKon/gh-timeline/releases).
 
+## Unreleased
+
+- `Space` now marks everything shown as read, and every timeline line in the TUI starts with a one-column gutter that shows `▎` for unread blocks.
+  - Before: `Space` scrolled down one page, and timeline lines started at the left edge.
+  - After: `Space` marks everything as read, and timeline lines start one column to the right. `-dump` output is unchanged.
+  - Migration: to scroll down one page, use `PgDn` or `f`.
+
 ## v0.2.0
 
 - The timeline (in the TUI and `-dump`) now groups events by pull request or issue within each `--- HH:MM ---` block.

@@ -5,14 +5,17 @@ A terminal UI that streams updates on the GitHub pull requests and issues you ar
 ```text
 gh-timeline — @you
 checked 14:05 · next 14:10 · every 5m0s
---- 14:05 ---
-14:03 owner/repo IS#45 closed carol Something broken
-14:01 owner/repo PR#130 review requested dave → you, erin Fix typo
+▎--- 14:05 ---
+▎owner/repo IS#45 Something broken
+▎  14:03 closed carol
+▎owner/repo PR#130 Fix typo
+▎  14:01 review requested dave → you, erin
 
---- 14:00 ---
-13:59 owner/repo PR#123 commented (2) bob Add feature
-13:58 owner/repo PR#123 approved alice Add feature
-↑/↓: scroll   g/G: top/bottom   r: refresh   q: quit
+ --- 14:00 ---
+ owner/repo PR#123 Add feature
+   13:59 commented (2) bob
+   13:58 approved alice
+↑/↓: scroll   g/G: top/bottom   space: mark read   r: refresh   q: quit
 ```
 
 ## What it shows
@@ -25,6 +28,8 @@ gh-timeline polls GitHub every 5 minutes for pull requests and issues that:
 - you have reviewed
 
 When a poll finds new activity, it adds a `--- HH:MM ---` block at the top of the timeline. Polls with no new activity add nothing. When the date changes, the separator includes it (`--- 11/21 09:00 ---`).
+
+Blocks you have not read yet have a colored `▎` at the left edge of every line. Press `Space` to mark everything shown as read. What the first poll finds on startup starts out as read, so the marks show only what arrived after that.
 
 Within a block, events are grouped by pull request or issue. The one with the newest event comes first, and its events follow newest first:
 
@@ -103,6 +108,7 @@ gh timeline -dump
 
 - `↑` / `↓` / `PgUp` / `PgDn`: scroll
 - `g` / `G`: jump to the top / bottom
+- `Space`: mark everything shown as read
 - `r`: check for updates now
 - `q` / `Ctrl+C`: quit
 
