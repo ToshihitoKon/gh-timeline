@@ -5,10 +5,6 @@ Entries from v0.3.0 on are written by [release-please](https://github.com/google
 ## [0.3.0](https://github.com/ToshihitoKon/gh-timeline/compare/v0.2.0...v0.3.0) (2026-11-24)
 
 
-### ⚠ BREAKING CHANGES
-
-* **ui:** draw items and events as a graph in the gutter with an unread marker
-
 ### Features
 
 * **ui:** add a left-edge gutter that marks unread blocks ([cad54e2](https://github.com/ToshihitoKon/gh-timeline/commit/cad54e2da49ceb178c4c0ffe892dfa20b26b4d87))
