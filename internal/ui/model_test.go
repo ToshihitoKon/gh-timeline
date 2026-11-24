@@ -269,6 +269,96 @@ func TestModel_StalePollTickIgnoredAfterManualRefresh(t *testing.T) {
 	}
 }
 
+// newItem は検索結果に入る PR を、指定の分前に alice がコメントした状態で作る。
+// 番号を変えると Tracker が別の PR として扱い、必ず新しい更新になる。
+func newItem(number int, minutesAgo int) github.Item {
+	at := time.Now().Add(-time.Duration(minutesAgo) * time.Minute)
+	item := entry().Item
+	item.Number = number
+	item.UpdatedAt = at
+	item.Events = []github.Event{{Type: github.EventCommented, Actor: "alice", At: at}}
+	return item
+}
+
+// applyFetch は取得が成功し、items が返ってきた状況を Model に流す。
+func applyFetch(t *testing.T, m Model, items ...github.Item) Model {
+	t.Helper()
+	m.isFetching = true
+	next, _ := m.Update(fetchedMsg{
+		startedAt: time.Now(),
+		since:     time.Now().Add(-time.Hour),
+		result:    github.SearchResult{Viewer: "me", Items: items},
+	})
+	return next.(Model)
+}
+
+var spaceKey = tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}
+
+func TestModel_FirstFetchIsRead(t *testing.T) {
+	m := applyFetch(t, newReadyModel(fakeFetcher{}), newItem(1, 1))
+	if m.readBatchCount != 1 {
+		t.Errorf("readBatchCount = %d, want 1", m.readBatchCount)
+	}
+}
+
+func TestModel_FirstFetchErrorThenSuccessIsRead(t *testing.T) {
+	m := newReadyModel(fakeFetcher{})
+	m.isFetching = true
+	next, _ := m.Update(fetchedMsg{startedAt: time.Now(), err: errors.New("boom")})
+	m = applyFetch(t, next.(Model), newItem(1, 1))
+	if m.readBatchCount != 1 {
+		t.Errorf("readBatchCount = %d, want 1", m.readBatchCount)
+	}
+}
+
+func TestModel_LaterFetchIsUnreadUntilSpace(t *testing.T) {
+	m := applyFetch(t, newReadyModel(fakeFetcher{})) // 初回は更新なし
+	m = applyFetch(t, m, newItem(1, 1))
+	if m.readBatchCount != 0 {
+		t.Fatalf("readBatchCount = %d, want 0 before space", m.readBatchCount)
+	}
+	if top := ansi.Strip(m.viewport.View()); !strings.HasPrefix(top, unreadMarker+"--- ") {
+		t.Errorf("top line not marked unread:\n%s", top)
+	}
+
+	next, _ := m.Update(spaceKey)
+	m = next.(Model)
+	if m.readBatchCount != 1 {
+		t.Errorf("readBatchCount = %d, want 1 after space", m.readBatchCount)
+	}
+	if top := ansi.Strip(m.viewport.View()); !strings.HasPrefix(top, readGutter+"--- ") {
+		t.Errorf("top line still marked unread after space:\n%s", top)
+	}
+}
+
+func TestModel_SpaceKeepsScrollPosition(t *testing.T) {
+	m := NewModel(fakeFetcher{}, timeline.NewTracker(time.Hour), 5*time.Minute)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: chromeLines + 3})
+	m = next.(Model)
+	m.batches = []timeline.Batch{batchAt(11, 40), batchAt(11, 45), batchAt(11, 50)}
+	m.refreshContent()
+	m.viewport.SetYOffset(2)
+
+	next, _ = m.Update(spaceKey)
+	m = next.(Model)
+	if m.viewport.YOffset != 2 {
+		t.Errorf("YOffset = %d, want 2 (space must not scroll)", m.viewport.YOffset)
+	}
+}
+
+func TestModel_SpaceWithNoBatches(t *testing.T) {
+	next, cmd := newReadyModel(fakeFetcher{}).Update(spaceKey)
+	if m := next.(Model); m.readBatchCount != 0 || cmd != nil {
+		t.Errorf("readBatchCount = %d, cmd = %v; want 0, nil", m.readBatchCount, cmd)
+	}
+}
+
+func TestModel_FooterShowsMarkRead(t *testing.T) {
+	if got := ansi.Strip(newReadyModel(fakeFetcher{}).footer()); !strings.Contains(got, "space: mark read") {
+		t.Errorf("footer = %q, want it to mention space: mark read", got)
+	}
+}
+
 func TestModel_FetchErrorShownInFooter(t *testing.T) {
 	m := newReadyModel(fakeFetcher{})
 	m.isFetching = true
