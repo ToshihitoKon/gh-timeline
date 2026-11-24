@@ -198,9 +198,47 @@ func batchAt(hh, mm int) timeline.Batch {
 }
 
 func TestRenderBatches_NewestBatchOnTop(t *testing.T) {
-	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), batchAt(11, 50)}, "me", 0))
-	if first, second := strings.Index(got, "--- 11:50 ---"), strings.Index(got, "--- 11:45 ---"); first != 0 || second < first {
+	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), batchAt(11, 50)}, 0, "me", 0))
+	second := strings.Index(got, "--- 11:45 ---")
+	if !strings.HasPrefix(got, "▐ --- 11:50 ---") || second < 0 {
 		t.Errorf("want 11:50 block first, got\n%s", got)
+	}
+}
+
+func TestRenderBatches_GraphAndUnreadMarkerAtLeftEdge(t *testing.T) {
+	newer := batchAt(11, 50)
+	issue := entry(ev(github.EventCommented, "bob", 11, 47))
+	issue.Item.Kind = github.KindIssue
+	issue.Item.Number = 8
+	issue.Item.Title = "Bug"
+	newer.Entries = append(newer.Entries, issue)
+
+	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), newer}, 1, "me", 0))
+	want := strings.Join([]string{
+		// 区切り行は丸と罫線の列から書き始め、新着の印の列には入らない
+		"▐ --- 11:50 ---",
+		"▐ ● o/r PR#7 Add feature",
+		"▐ │   11:49 commented alice",
+		"▐ ● o/r IS#8 Bug",
+		"▐ │   11:47 commented bob",
+		"",
+		"  --- 11:45 ---",
+		"  ● o/r PR#7 Add feature",
+		"  │   11:44 commented alice",
+	}, "\n")
+	if got != want {
+		t.Errorf("RenderBatches =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestRenderBatches_TruncatesIncludingMarker(t *testing.T) {
+	for _, width := range []int{1, 12} {
+		for _, line := range strings.Split(RenderBatches([]timeline.Batch{batchAt(11, 45)}, 0, "me", width), "\n") {
+			// 極端に狭い端末では、欄の 4 桁に加えて本文を 1 桁（省略記号）だけ残すため、その分まで許す
+			if w := ansi.StringWidth(line); w > max(width, 5) {
+				t.Errorf("width %d: line %q width = %d", width, ansi.Strip(line), w)
+			}
+		}
 	}
 }
 
@@ -241,6 +279,96 @@ func TestModel_StalePollTickIgnoredAfterManualRefresh(t *testing.T) {
 	}
 }
 
+// newItem は検索結果に入る PR を、指定の分前に alice がコメントした状態で作る。
+// 番号を変えると Tracker が別の PR として扱い、必ず新しい更新になる。
+func newItem(number int, minutesAgo int) github.Item {
+	at := time.Now().Add(-time.Duration(minutesAgo) * time.Minute)
+	item := entry().Item
+	item.Number = number
+	item.UpdatedAt = at
+	item.Events = []github.Event{{Type: github.EventCommented, Actor: "alice", At: at}}
+	return item
+}
+
+// applyFetch は取得が成功し、items が返ってきた状況を Model に流す。
+func applyFetch(t *testing.T, m Model, items ...github.Item) Model {
+	t.Helper()
+	m.isFetching = true
+	next, _ := m.Update(fetchedMsg{
+		startedAt: time.Now(),
+		since:     time.Now().Add(-time.Hour),
+		result:    github.SearchResult{Viewer: "me", Items: items},
+	})
+	return next.(Model)
+}
+
+var spaceKey = tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}
+
+func TestModel_FirstFetchIsRead(t *testing.T) {
+	m := applyFetch(t, newReadyModel(fakeFetcher{}), newItem(1, 1))
+	if m.readBatchCount != 1 {
+		t.Errorf("readBatchCount = %d, want 1", m.readBatchCount)
+	}
+}
+
+func TestModel_FirstFetchErrorThenSuccessIsRead(t *testing.T) {
+	m := newReadyModel(fakeFetcher{})
+	m.isFetching = true
+	next, _ := m.Update(fetchedMsg{startedAt: time.Now(), err: errors.New("boom")})
+	m = applyFetch(t, next.(Model), newItem(1, 1))
+	if m.readBatchCount != 1 {
+		t.Errorf("readBatchCount = %d, want 1", m.readBatchCount)
+	}
+}
+
+func TestModel_LaterFetchIsUnreadUntilSpace(t *testing.T) {
+	m := applyFetch(t, newReadyModel(fakeFetcher{})) // 初回は更新なし
+	m = applyFetch(t, m, newItem(1, 1))
+	if m.readBatchCount != 0 {
+		t.Fatalf("readBatchCount = %d, want 0 before space", m.readBatchCount)
+	}
+	if top := ansi.Strip(m.viewport.View()); !strings.HasPrefix(top, "▐ --- ") {
+		t.Errorf("top line not marked unread:\n%s", top)
+	}
+
+	next, _ := m.Update(spaceKey)
+	m = next.(Model)
+	if m.readBatchCount != 1 {
+		t.Errorf("readBatchCount = %d, want 1 after space", m.readBatchCount)
+	}
+	if top := ansi.Strip(m.viewport.View()); !strings.HasPrefix(top, "  --- ") {
+		t.Errorf("top line still marked unread after space:\n%s", top)
+	}
+}
+
+func TestModel_SpaceKeepsScrollPosition(t *testing.T) {
+	m := NewModel(fakeFetcher{}, timeline.NewTracker(time.Hour), 5*time.Minute)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: chromeLines + 3})
+	m = next.(Model)
+	m.batches = []timeline.Batch{batchAt(11, 40), batchAt(11, 45), batchAt(11, 50)}
+	m.refreshContent()
+	m.viewport.SetYOffset(2)
+
+	next, _ = m.Update(spaceKey)
+	m = next.(Model)
+	if m.viewport.YOffset != 2 {
+		t.Errorf("YOffset = %d, want 2 (space must not scroll)", m.viewport.YOffset)
+	}
+}
+
+func TestModel_SpaceWithNoBatches(t *testing.T) {
+	next, cmd := newReadyModel(fakeFetcher{}).Update(spaceKey)
+	if m := next.(Model); m.readBatchCount != 0 || cmd != nil {
+		t.Errorf("readBatchCount = %d, cmd = %v; want 0, nil", m.readBatchCount, cmd)
+	}
+}
+
+func TestModel_FooterShowsMarkRead(t *testing.T) {
+	if got := ansi.Strip(newReadyModel(fakeFetcher{}).footer()); !strings.Contains(got, "space: mark read") {
+		t.Errorf("footer = %q, want it to mention space: mark read", got)
+	}
+}
+
 func TestModel_FetchErrorShownInFooter(t *testing.T) {
 	m := newReadyModel(fakeFetcher{})
 	m.isFetching = true
@@ -251,5 +379,9 @@ func TestModel_FetchErrorShownInFooter(t *testing.T) {
 	}
 	if got := ansi.Strip(m.footer()); !strings.Contains(got, "error: gh api: exit status 1: HTTP 401") {
 		t.Errorf("footer = %q, want single-line error", got)
+	}
+	// 80 桁の端末で切り詰めても、キー案内に押し出されずにエラーの本文が読める
+	if got := ansi.Strip(m.fitWidth(m.footer())); !strings.Contains(got, "error: gh api: exit status 1: HTTP 401") {
+		t.Errorf("footer at width %d = %q, want the error text to survive truncation", m.width, got)
 	}
 }

@@ -29,20 +29,78 @@ var (
 	draftStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	mergedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("141"))
 	closedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+
+	// open の PR 番号や approved と同じ緑にする。28 のような暗い緑は黒い背景に沈んで見落とすため。
+	// 印・丸・罫線は左端の欄にしか出ないので、同じ色でも位置で見分けられる。
+	unreadStyle = openStyle
+	// 既読の丸と罫線は本文より後ろに下げたいので、draft の 245 より暗い灰色にする。
+	readGraphStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 )
 
+// 左端の欄は「新着の印・空白・丸か罫線・空白」の 4 桁。
+// 新着の印は右半分を塗る ▐ にする。▎ では細くて見落とし、█ では塗りが重く、
+// ▌ では端末の左端に張り付いて窮屈に見えるため。
+// 未読と既読を印の有無という形の違いで見分けられるようにし、色を出せない端末でも区別できるようにする。
+const (
+	unreadMarker = "▐"
+	itemMarker   = "●"
+	eventMarker  = "│"
+)
+
+// lineKind は描画した 1 行の種類。左端の欄に何を出すかが種類で変わる。
+type lineKind int
+
+const (
+	lineSeparator lineKind = iota
+	lineItemHeader
+	lineEvent
+)
+
+type batchLine struct {
+	kind lineKind
+	text string
+}
+
 // RenderBatches は全 Batch を区切り行付きで、新しいものを上にして描画する。
-// batches は古い順で渡す。width が 0 以下なら行を切り詰めない。
-func RenderBatches(batches []timeline.Batch, viewer string, width int) string {
+// batches は古い順で渡し、先頭から readCount 件を既読、それより新しいものを未読として
+// 各行の左端の欄に印・丸・罫線を付ける。width が 0 以下なら行を切り詰めない。
+func RenderBatches(batches []timeline.Batch, readCount int, viewer string, width int) string {
 	blocks := make([]string, 0, len(batches))
 	for i := len(batches) - 1; i >= 0; i-- {
 		var prev time.Time
 		if i > 0 {
 			prev = batches[i-1].CheckedAt
 		}
-		blocks = append(blocks, RenderBatch(batches[i], prev, viewer, width))
+		isUnread := i >= readCount
+		var lines []string
+		for _, l := range batchLines(batches[i], prev, viewer) {
+			prefix := gutter(l.kind, isUnread)
+			bodyWidth := width
+			if width > 0 {
+				// 欄より狭い端末でも本文は 1 桁残す。0 にすると truncate が「切り詰めない」と扱うため。
+				bodyWidth = max(width-ansi.StringWidth(prefix), 1)
+			}
+			lines = append(lines, prefix+truncate(l.text, bodyWidth))
+		}
+		blocks = append(blocks, strings.Join(lines, "\n"))
 	}
 	return strings.Join(blocks, "\n\n")
+}
+
+// gutter は左端の欄を返す。区切り行は丸と罫線の列から書き始め、まとまりの始まりが
+// PR / issue の見出しより一段外に出て見えるようにする。
+func gutter(kind lineKind, isUnread bool) string {
+	newMark, graphStyle := " ", readGraphStyle
+	if isUnread {
+		newMark, graphStyle = unreadStyle.Render(unreadMarker), unreadStyle
+	}
+	switch kind {
+	case lineItemHeader:
+		return newMark + " " + graphStyle.Render(itemMarker) + " "
+	case lineEvent:
+		return newMark + " " + graphStyle.Render(eventMarker) + " "
+	}
+	return newMark + " "
 }
 
 // RenderBatch は 1 回のポーリング分を "--- HH:MM ---" の区切り行に続けて、PR / issue ごとに
@@ -50,20 +108,31 @@ func RenderBatches(batches []timeline.Batch, viewer string, width int) string {
 // PR / issue は最新のイベントが新しい順、イベントも新しい順に並べる。
 // prevCheckedAt は 1 つ前（時刻が古い側）の Batch の時刻で、日付が変わったときだけ区切り行に日付を出す。
 func RenderBatch(b timeline.Batch, prevCheckedAt time.Time, viewer string, width int) string {
-	lines := []string{separator(b.CheckedAt, prevCheckedAt)}
-	for _, blk := range batchBlocks(b) {
-		lines = append(lines, renderItemHeader(blk, viewer))
-		for _, ev := range blk.Events {
-			lines = append(lines, renderEventLine(ev, b.CheckedAt, viewer))
-		}
-	}
-	if width > 0 {
-		// viewport は長い行を折り返さずにはみ出させるため、表示幅で切り詰める。
-		for i, l := range lines {
-			lines[i] = ansi.Truncate(l, width, "…")
-		}
+	var lines []string
+	for _, l := range batchLines(b, prevCheckedAt, viewer) {
+		lines = append(lines, truncate(l.text, width))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func batchLines(b timeline.Batch, prevCheckedAt time.Time, viewer string) []batchLine {
+	lines := []batchLine{{kind: lineSeparator, text: separator(b.CheckedAt, prevCheckedAt)}}
+	for _, blk := range batchBlocks(b) {
+		lines = append(lines, batchLine{kind: lineItemHeader, text: renderItemHeader(blk, viewer)})
+		for _, ev := range blk.Events {
+			lines = append(lines, batchLine{kind: lineEvent, text: renderEventLine(ev, b.CheckedAt, viewer)})
+		}
+	}
+	return lines
+}
+
+// truncate は viewport が長い行を折り返さずにはみ出させるため、表示幅で切り詰める。
+// width が 0 以下（-dump など端末幅が無いとき）は切り詰めない。
+func truncate(line string, width int) string {
+	if width <= 0 {
+		return line
+	}
+	return ansi.Truncate(line, width, "…")
 }
 
 func separator(checkedAt, prevCheckedAt time.Time) string {

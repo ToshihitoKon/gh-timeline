@@ -62,6 +62,11 @@ type Model struct {
 	isTruncated   bool
 	isFetching    bool
 
+	// readBatchCount は batches の古い側から何件を既読にしたか。既読にする操作は
+	// 「表示中の最新まで」の一種類だけなので、Batch ごとに既読かどうかを持たずに済む。
+	readBatchCount int
+	hasFetched     bool // 取得に一度でも成功したか。初回に取得した分を既読にするために使う
+
 	// pollSeq は予約中のポーリングを識別する番号。r キーで即時に取得したとき、
 	// それ以前に予約した tick を無効にしてポーリングが二重に走らないようにする。
 	pollSeq int
@@ -138,6 +143,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.pollSeq++ // 予約済みの tick を無効にする
 			return m, m.startFetch(time.Now())
+		case " ":
+			// viewport の既定ではスペースが 1 画面下へのスクロールに割り当たっているため、
+			// viewport に渡さずここで止める。
+			m.readBatchCount = len(m.batches)
+			m.refreshContent()
+			return m, nil
 		case "G", "end":
 			m.viewport.GotoBottom()
 			return m, nil
@@ -162,8 +173,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			m.viewer = msg.result.Viewer
 			m.isTruncated = msg.result.Truncated
-			if batch := m.tracker.Apply(msg.startedAt, msg.since, msg.result.Items); len(batch.Entries) > 0 {
+			batch := m.tracker.Apply(msg.startedAt, msg.since, msg.result.Items)
+			hasUpdates := len(batch.Entries) > 0
+			if hasUpdates {
 				m.batches = append(m.batches, batch)
+			}
+			if !m.hasFetched {
+				m.readBatchCount = len(m.batches)
+				m.hasFetched = true
+			}
+			if hasUpdates {
 				m.refreshContent()
 			}
 		}
@@ -208,7 +227,7 @@ func (m Model) renderTimeline() string {
 		}
 		return faintStyle.Render(fmt.Sprintf("No updates since %s.", m.watchingSince.Format("01/02 15:04")))
 	}
-	return RenderBatches(m.batches, m.viewer, m.width)
+	return RenderBatches(m.batches, m.readBatchCount, m.viewer, m.width)
 }
 
 func (m Model) View() string {
@@ -241,15 +260,17 @@ func (m Model) statusLine() string {
 }
 
 func (m Model) footer() string {
-	text := faintStyle.Render("↑/↓: scroll   g/G: top/bottom   r: refresh   q: quit")
+	keys := faintStyle.Render("↑/↓: scroll   g/G: top/bottom   space: mark read   r: refresh   q: quit")
+	// エラーと警告はキー案内より前に出す。後ろに付けると、80 桁の端末ではキー案内だけで
+	// 幅をほぼ使い切り、切り詰めで本文が消えてしまうため。
 	switch {
 	case m.lastErr != nil:
 		// 失敗した回は tracker の検索範囲を進めないので、次の成功時にまとめて取り直される。
 		// gh の stderr は複数行になりうるが、フッタは 1 行に収める必要がある。
 		msg := strings.Join(strings.Fields(m.lastErr.Error()), " ")
-		text += "   " + closedStyle.Render("error: "+msg)
+		return closedStyle.Render("error: "+msg) + "   " + keys
 	case m.isTruncated:
-		text += "   " + draftStyle.Render("some results were truncated (over 100 hits)")
+		return draftStyle.Render("some results were truncated (over 100 hits)") + "   " + keys
 	}
-	return text
+	return keys
 }
