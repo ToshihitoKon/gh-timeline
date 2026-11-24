@@ -190,6 +190,24 @@ func TestModel_FetchAppendsBatchOnlyWhenUpdated(t *testing.T) {
 	}
 }
 
+func TestModel_FirstFetchWithNoUpdatesReplacesLoading(t *testing.T) {
+	m := newReadyModel(fakeFetcher{result: github.SearchResult{Viewer: "me"}})
+	if !strings.Contains(m.View(), "Loading...") {
+		t.Fatalf("view before fetch does not show Loading...:\n%s", m.View())
+	}
+
+	next, cmd := m.Update(pollTickMsg{seq: 0})
+	next, _ = next.(Model).Update(runCmd(t, cmd))
+	view := next.(Model).View()
+
+	if strings.Contains(view, "Loading...") {
+		t.Errorf("view still shows Loading...:\n%s", view)
+	}
+	if !strings.Contains(view, "No updates since") {
+		t.Errorf("view does not show No updates since:\n%s", view)
+	}
+}
+
 func batchAt(hh, mm int) timeline.Batch {
 	return timeline.Batch{
 		CheckedAt: time.Date(2026, 11, 20, hh, mm, 0, 0, jst),

@@ -182,9 +182,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.readBatchCount = len(m.batches)
 				m.hasFetched = true
 			}
-			if hasUpdates {
-				m.refreshContent()
-			}
+			// 初回の取得では更新が無くても「Loading...」を「No updates since ...」に
+			// 置き換える必要があるため、更新の有無にかかわらず描き直す。
+			m.refreshContent()
 		}
 		return m, m.scheduleNextPoll(time.Now())
 
