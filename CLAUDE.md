@@ -5,9 +5,11 @@
 - PR のタイトルは Conventional Commits の形式で書く
   - 例: `feat(ui): show labels`、`fix: ...`、`docs: ...`
   - `feat` と `fix` は CHANGES.md に載り、次の版を上げる。`docs`、`chore`、`ci`、`test`、`refactor` などは載らない
-- 利用者に見える挙動を壊す変更には、タイトルの type / scope の直後に `!` を付ける
-  - 例: `feat(ui)!: drop the time column`
-  - 対象: 受け付けるフラグ、キー操作、タイムラインの行や `-dump` の出力の形、追いかける PR / issue の範囲
+- 利用者の使い方を壊す変更には、タイトルの type / scope の直後に `!` を付ける
+  - 例: `feat!: drop the time from -dump event lines`
+  - 対象: 受け付けるフラグ、README やフッターで案内しているキー操作、`-dump` の出力の形
+  - TUI の画面を読み取って動くものはないため、TUI の見た目（色、記号、行の並べ方）の変更は対象にせず、`feat` / `fix` として扱う
+  - 案内していないキー（bubbles の viewport が既定で割り当てたキーなど）の意味を変えても対象にしない
   - 1.0 未満の間は、`!` を付けてもマイナー版が上がる（`release-please-config.json` の `bump-minor-pre-major`）
 - 破壊的変更の PR では、本文にコミットの差し替えブロックを書き、以前の挙動・新しい挙動・移行のしかたを `BREAKING CHANGE:` のフッターに書く
   - release-please はこのブロックをスカッシュコミットの代わりに読み、CHANGES.md とリリースノートの「⚠ BREAKING CHANGES」に載せる
@@ -17,9 +19,9 @@
 
     ```text
     BEGIN_COMMIT_OVERRIDE
-    feat(ui)!: drop the time column
+    feat!: drop the time from -dump event lines
 
-    BREAKING CHANGE: the time column is gone from timeline rows. Before: `14:01 owner/repo ...`. After: `owner/repo ...`. Migration: read the time from the event lines.
+    BREAKING CHANGE: `-dump` no longer prints the time on event lines. Before: `  14:01 commented alice`. After: `  commented alice`. Migration: use the time on the `--- HH:MM ---` line above, which is when the update was found.
     END_COMMIT_OVERRIDE
     ```
 - dependabot の PR には触らない
