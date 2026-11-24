@@ -29,18 +29,42 @@ var (
 	draftStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	mergedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("141"))
 	closedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+
+	// 黄。行の中のどの要素にも使っていない色にして、未読の印を本文の色と取り違えないようにする。
+	unreadMarkerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
+)
+
+// unreadMarker と readGutter は左端の欄の中身。既読でも空白で 1 桁を確保し、
+// 既読にしたときに行頭の位置が動かないようにする。
+const (
+	unreadMarker = "▎"
+	readGutter   = " "
 )
 
 // RenderBatches は全 Batch を区切り行付きで、新しいものを上にして描画する。
-// batches は古い順で渡す。width が 0 以下なら行を切り詰めない。
-func RenderBatches(batches []timeline.Batch, viewer string, width int) string {
+// batches は古い順で渡し、先頭から readCount 件を既読、それより新しいものを未読として
+// 各行の左端の欄に印を付ける。width が 0 以下なら行を切り詰めない。
+func RenderBatches(batches []timeline.Batch, readCount int, viewer string, width int) string {
+	bodyWidth := width
+	if width > 0 {
+		// RenderBatch は 0 以下を「切り詰めない」と扱うため、幅 1 の端末でも 1 桁は残す。
+		bodyWidth = max(width-ansi.StringWidth(readGutter), 1)
+	}
 	blocks := make([]string, 0, len(batches))
 	for i := len(batches) - 1; i >= 0; i-- {
 		var prev time.Time
 		if i > 0 {
 			prev = batches[i-1].CheckedAt
 		}
-		blocks = append(blocks, RenderBatch(batches[i], prev, viewer, width))
+		gutter := readGutter
+		if i >= readCount {
+			gutter = unreadMarkerStyle.Render(unreadMarker)
+		}
+		lines := strings.Split(RenderBatch(batches[i], prev, viewer, bodyWidth), "\n")
+		for j, l := range lines {
+			lines[j] = gutter + l
+		}
+		blocks = append(blocks, strings.Join(lines, "\n"))
 	}
 	return strings.Join(blocks, "\n\n")
 }

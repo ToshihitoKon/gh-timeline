@@ -198,9 +198,37 @@ func batchAt(hh, mm int) timeline.Batch {
 }
 
 func TestRenderBatches_NewestBatchOnTop(t *testing.T) {
-	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), batchAt(11, 50)}, "me", 0))
-	if first, second := strings.Index(got, "--- 11:50 ---"), strings.Index(got, "--- 11:45 ---"); first != 0 || second < first {
+	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), batchAt(11, 50)}, 0, "me", 0))
+	// 左端の欄の 1 桁があるため、先頭の区切り行は 2 桁目から始まる
+	if first, second := strings.Index(got, "--- 11:50 ---"), strings.Index(got, "--- 11:45 ---"); first != len(unreadMarker) || second < first {
 		t.Errorf("want 11:50 block first, got\n%s", got)
+	}
+}
+
+func TestRenderBatches_UnreadBlocksMarkedAtLeftEdge(t *testing.T) {
+	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), batchAt(11, 50)}, 1, "me", 0))
+	want := strings.Join([]string{
+		"▎--- 11:50 ---",
+		"▎o/r PR#7 Add feature",
+		"▎  11:49 commented alice",
+		"",
+		" --- 11:45 ---",
+		" o/r PR#7 Add feature",
+		"   11:44 commented alice",
+	}, "\n")
+	if got != want {
+		t.Errorf("RenderBatches =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestRenderBatches_TruncatesIncludingMarker(t *testing.T) {
+	for _, width := range []int{1, 12} {
+		for _, line := range strings.Split(RenderBatches([]timeline.Batch{batchAt(11, 45)}, 0, "me", width), "\n") {
+			// 幅 1 では欄の 1 桁に加えて本文を 1 桁（省略記号）だけ残すため、2 桁まで許す
+			if w := ansi.StringWidth(line); w > max(width, 2) {
+				t.Errorf("width %d: line %q width = %d", width, ansi.Strip(line), w)
+			}
+		}
 	}
 }
 

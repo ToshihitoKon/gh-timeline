@@ -208,7 +208,7 @@ func (m Model) renderTimeline() string {
 		}
 		return faintStyle.Render(fmt.Sprintf("No updates since %s.", m.watchingSince.Format("01/02 15:04")))
 	}
-	return RenderBatches(m.batches, m.viewer, m.width)
+	return RenderBatches(m.batches, len(m.batches), m.viewer, m.width)
 }
 
 func (m Model) View() string {
