@@ -260,15 +260,17 @@ func (m Model) statusLine() string {
 }
 
 func (m Model) footer() string {
-	text := faintStyle.Render("↑/↓: scroll   g/G: top/bottom   space: mark read   r: refresh   q: quit")
+	keys := faintStyle.Render("↑/↓: scroll   g/G: top/bottom   space: mark read   r: refresh   q: quit")
+	// エラーと警告はキー案内より前に出す。後ろに付けると、80 桁の端末ではキー案内だけで
+	// 幅をほぼ使い切り、切り詰めで本文が消えてしまうため。
 	switch {
 	case m.lastErr != nil:
 		// 失敗した回は tracker の検索範囲を進めないので、次の成功時にまとめて取り直される。
 		// gh の stderr は複数行になりうるが、フッタは 1 行に収める必要がある。
 		msg := strings.Join(strings.Fields(m.lastErr.Error()), " ")
-		text += "   " + closedStyle.Render("error: "+msg)
+		return closedStyle.Render("error: "+msg) + "   " + keys
 	case m.isTruncated:
-		text += "   " + draftStyle.Render("some results were truncated (over 100 hits)")
+		return draftStyle.Render("some results were truncated (over 100 hits)") + "   " + keys
 	}
-	return text
+	return keys
 }

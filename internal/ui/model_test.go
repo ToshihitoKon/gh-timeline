@@ -370,4 +370,8 @@ func TestModel_FetchErrorShownInFooter(t *testing.T) {
 	if got := ansi.Strip(m.footer()); !strings.Contains(got, "error: gh api: exit status 1: HTTP 401") {
 		t.Errorf("footer = %q, want single-line error", got)
 	}
+	// 80 桁の端末で切り詰めても、キー案内に押し出されずにエラーの本文が読める
+	if got := ansi.Strip(m.fitWidth(m.footer())); !strings.Contains(got, "error: gh api: exit status 1: HTTP 401") {
+		t.Errorf("footer at width %d = %q, want the error text to survive truncation", m.width, got)
+	}
 }
