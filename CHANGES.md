@@ -1,14 +1,6 @@
 # Changes
 
-Breaking changes and how to migrate. Other changes are listed in the
-[release notes](https://github.com/ToshihitoKon/gh-timeline/releases).
-
-## Unreleased
-
-- `Space` now marks everything shown as read, and timeline lines in the TUI start with a gutter that shows `▐` for unread blocks and `●` / `│` for each pull request or issue and its events.
-  - Before: `Space` scrolled down one page, and timeline lines started at the left edge.
-  - After: `Space` marks everything as read. Separator lines start two columns to the right, and heading and event lines four columns to the right. `-dump` output is unchanged.
-  - Migration: to scroll down one page, use `PgDn` or `f`.
+Entries from v0.3.0 on are written by [release-please](https://github.com/googleapis/release-please) from pull request titles. Breaking changes and how to migrate are listed under "⚠ BREAKING CHANGES". Entries up to v0.2.0 list only breaking changes.
 
 ## v0.2.0
 

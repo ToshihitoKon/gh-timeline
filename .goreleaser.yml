@@ -24,9 +24,9 @@ archives:
   # そのまま実行ファイルとして置く。アーカイブに固めると見つけられないため、バイナリのまま載せる。
   - formats: [binary]
     name_template: '{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}'
+# Release とその本文は release-please が先に作るため、GoReleaser はバイナリを載せるだけにする。
 changelog:
-  use: github-native
+  disable: true
 release:
   prerelease: auto
-  footer: |
-    See [CHANGES.md](https://github.com/ToshihitoKon/gh-timeline/blob/{{ .Tag }}/CHANGES.md) for breaking changes and how to migrate.
+  mode: keep-existing
