@@ -5,16 +5,16 @@ A terminal UI that streams updates on the GitHub pull requests and issues you ar
 ```text
 gh-timeline — @you
 checked 14:05 · next 14:10 · every 5m0s
-▎--- 14:05 ---
-▎owner/repo IS#45 Something broken
-▎  14:03 closed carol
-▎owner/repo PR#130 Fix typo
-▎  14:01 review requested dave → you, erin
+▐ --- 14:05 ---
+▐ ● owner/repo IS#45 Something broken
+▐ │   14:03 closed carol
+▐ ● owner/repo PR#130 Fix typo
+▐ │   14:01 review requested dave → you, erin
 
- --- 14:00 ---
- owner/repo PR#123 Add feature
-   13:59 commented (2) bob
-   13:58 approved alice
+  --- 14:00 ---
+  ● owner/repo PR#123 Add feature
+  │   13:59 commented (2) bob
+  │   13:58 approved alice
 ↑/↓: scroll   g/G: top/bottom   space: mark read   r: refresh   q: quit
 ```
 
@@ -29,7 +29,7 @@ gh-timeline polls GitHub every 5 minutes for pull requests and issues that:
 
 When a poll finds new activity, it adds a `--- HH:MM ---` block at the top of the timeline. Polls with no new activity add nothing. When the date changes, the separator includes it (`--- 11/21 09:00 ---`).
 
-Blocks you have not read yet have a colored `▎` at the left edge of every line. Press `Space` to mark everything shown as read. What the first poll finds on startup starts out as read, so the marks show only what arrived after that.
+In the TUI, each pull request or issue starts with `●` and its events follow a `│` line. Blocks you have not read yet also have a `▐` at the left edge of every line, and their `●` and `│` are green instead of gray. Press `Space` to mark everything shown as read. What the first successful poll finds on startup starts out as read, so the marks show only what arrived after that.
 
 Within a block, events are grouped by pull request or issue. The one with the newest event comes first, and its events follow newest first:
 

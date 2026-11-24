@@ -199,22 +199,32 @@ func batchAt(hh, mm int) timeline.Batch {
 
 func TestRenderBatches_NewestBatchOnTop(t *testing.T) {
 	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), batchAt(11, 50)}, 0, "me", 0))
-	// 左端の欄の 1 桁があるため、先頭の区切り行は 2 桁目から始まる
-	if first, second := strings.Index(got, "--- 11:50 ---"), strings.Index(got, "--- 11:45 ---"); first != len(unreadMarker) || second < first {
+	second := strings.Index(got, "--- 11:45 ---")
+	if !strings.HasPrefix(got, "▐ --- 11:50 ---") || second < 0 {
 		t.Errorf("want 11:50 block first, got\n%s", got)
 	}
 }
 
-func TestRenderBatches_UnreadBlocksMarkedAtLeftEdge(t *testing.T) {
-	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), batchAt(11, 50)}, 1, "me", 0))
+func TestRenderBatches_GraphAndUnreadMarkerAtLeftEdge(t *testing.T) {
+	newer := batchAt(11, 50)
+	issue := entry(ev(github.EventCommented, "bob", 11, 47))
+	issue.Item.Kind = github.KindIssue
+	issue.Item.Number = 8
+	issue.Item.Title = "Bug"
+	newer.Entries = append(newer.Entries, issue)
+
+	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), newer}, 1, "me", 0))
 	want := strings.Join([]string{
-		"▎--- 11:50 ---",
-		"▎o/r PR#7 Add feature",
-		"▎  11:49 commented alice",
+		// 区切り行は丸と罫線の列から書き始め、新着の印の列には入らない
+		"▐ --- 11:50 ---",
+		"▐ ● o/r PR#7 Add feature",
+		"▐ │   11:49 commented alice",
+		"▐ ● o/r IS#8 Bug",
+		"▐ │   11:47 commented bob",
 		"",
-		" --- 11:45 ---",
-		" o/r PR#7 Add feature",
-		"   11:44 commented alice",
+		"  --- 11:45 ---",
+		"  ● o/r PR#7 Add feature",
+		"  │   11:44 commented alice",
 	}, "\n")
 	if got != want {
 		t.Errorf("RenderBatches =\n%s\nwant\n%s", got, want)
@@ -224,8 +234,8 @@ func TestRenderBatches_UnreadBlocksMarkedAtLeftEdge(t *testing.T) {
 func TestRenderBatches_TruncatesIncludingMarker(t *testing.T) {
 	for _, width := range []int{1, 12} {
 		for _, line := range strings.Split(RenderBatches([]timeline.Batch{batchAt(11, 45)}, 0, "me", width), "\n") {
-			// 幅 1 では欄の 1 桁に加えて本文を 1 桁（省略記号）だけ残すため、2 桁まで許す
-			if w := ansi.StringWidth(line); w > max(width, 2) {
+			// 極端に狭い端末では、欄の 4 桁に加えて本文を 1 桁（省略記号）だけ残すため、その分まで許す
+			if w := ansi.StringWidth(line); w > max(width, 5) {
 				t.Errorf("width %d: line %q width = %d", width, ansi.Strip(line), w)
 			}
 		}
@@ -317,7 +327,7 @@ func TestModel_LaterFetchIsUnreadUntilSpace(t *testing.T) {
 	if m.readBatchCount != 0 {
 		t.Fatalf("readBatchCount = %d, want 0 before space", m.readBatchCount)
 	}
-	if top := ansi.Strip(m.viewport.View()); !strings.HasPrefix(top, unreadMarker+"--- ") {
+	if top := ansi.Strip(m.viewport.View()); !strings.HasPrefix(top, "▐ --- ") {
 		t.Errorf("top line not marked unread:\n%s", top)
 	}
 
@@ -326,7 +336,7 @@ func TestModel_LaterFetchIsUnreadUntilSpace(t *testing.T) {
 	if m.readBatchCount != 1 {
 		t.Errorf("readBatchCount = %d, want 1 after space", m.readBatchCount)
 	}
-	if top := ansi.Strip(m.viewport.View()); !strings.HasPrefix(top, readGutter+"--- ") {
+	if top := ansi.Strip(m.viewport.View()); !strings.HasPrefix(top, "  --- ") {
 		t.Errorf("top line still marked unread after space:\n%s", top)
 	}
 }
