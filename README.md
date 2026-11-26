@@ -107,6 +107,7 @@ gh timeline -dump
 ### Keys
 
 - `↑` / `↓` / `PgUp` / `PgDn`: scroll
+  - The mouse wheel also scrolls in terminals that send it as `↑` / `↓` in full-screen apps, as they do for `less`. Text can still be selected by dragging.
 - `g` / `G`: jump to the top / bottom
 - `Space`: mark everything shown as read
 - `r`: check for updates now
@@ -115,6 +116,18 @@ gh timeline -dump
 While you are at the top, new blocks keep the view at the top. While you are reading older blocks, the view stays where you are.
 
 If a poll fails, the error appears in the footer and the next successful poll also picks up what the failed one missed.
+
+## Tips
+
+### Mouse wheel in tmux
+
+With `set -g mouse on`, tmux does not pass the mouse wheel to full-screen apps that do not use the mouse, such as gh-timeline and `less`. To scroll them with the wheel, make tmux send the wheel as `↑` / `↓`, for example with [tmux-better-mouse-mode](https://github.com/NHDaly/tmux-better-mouse-mode):
+
+```tmux
+# Put these above the line that runs tpm
+set -g @plugin 'nhdaly/tmux-better-mouse-mode'
+set -g @emulate-scroll-for-no-mouse-alternate-buffer "on"
+```
 
 ## Limitations
 
