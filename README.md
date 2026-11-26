@@ -27,11 +27,7 @@ gh-timeline polls GitHub every 5 minutes for pull requests and issues that:
 - request your review (personally; add `-team-reviews` to include your teams)
 - you have reviewed
 
-When a poll finds new activity, it adds a `--- HH:MM ---` block at the top of the timeline. Polls with no new activity add nothing. When the date changes, the separator includes it (`--- 11/21 09:00 ---`).
-
-In the TUI, each pull request or issue starts with `●` and its events follow a `│` line. Blocks you have not read yet also have a `▐` at the left edge of every line, and their `●` and `│` are green instead of gray. Press `Space` to mark everything shown as read. What the first successful poll finds on startup starts out as read, so the marks show only what arrived after that.
-
-Within a block, events are grouped by pull request or issue. The one with the newest event comes first, and its events follow newest first:
+Each `--- HH:MM ---` block groups events by pull request or issue. The one with the newest event comes first, and its events follow newest first. `-dump` prints the same lines without the marks at the left edge:
 
 ```text
 --- 14:05 ---
@@ -119,6 +115,7 @@ gh timeline -dump
   - The mouse wheel also scrolls in terminals that send it as `↑` / `↓` in full-screen apps, as they do for `less`. Text can still be selected by dragging.
 - `g` / `G`: jump to the top / bottom
 - `Space`: mark everything shown as read
+  - What the first successful poll finds on startup starts out as read.
 - `r`: check for updates now
 - `q` / `Ctrl+C`: quit
 
