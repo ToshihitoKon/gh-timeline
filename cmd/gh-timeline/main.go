@@ -68,7 +68,9 @@ func main() {
 		return
 	}
 
-	p := tea.NewProgram(ui.NewModel(client, tracker, *interval))
+	// マウスイベントを取る WithMouseCellMotion ではターミナルのドラッグ選択が効かなくなるため、
+	// alternate screen に入るだけにして、ホイールを ↑/↓ キーに変換するターミナルの機能に任せる。
+	p := tea.NewProgram(ui.NewModel(client, tracker, *interval), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "gh-timeline:", err)
 		os.Exit(1)
