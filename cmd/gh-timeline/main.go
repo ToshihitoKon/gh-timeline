@@ -40,6 +40,7 @@ func main() {
 	interval := flag.Duration("interval", 5*time.Minute, "polling interval")
 	lookback := flag.Duration("since", 30*time.Minute, "how far back to look on the first poll")
 	includeTeamReviews := flag.Bool("team-reviews", false, "also follow PRs whose review is requested from your teams")
+	showURL := flag.Bool("show-url", false, "show the URL under each pull request and issue")
 	dump := flag.Bool("dump", false, "print updates once and exit, without starting the TUI")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -61,7 +62,7 @@ func main() {
 	tracker := timeline.NewTracker(*lookback)
 
 	if *dump {
-		if err := runDump(client, tracker); err != nil {
+		if err := runDump(client, tracker, *showURL); err != nil {
 			fmt.Fprintln(os.Stderr, "gh-timeline:", err)
 			os.Exit(1)
 		}
@@ -70,7 +71,7 @@ func main() {
 
 	// マウスイベントを取る WithMouseCellMotion ではターミナルのドラッグ選択が効かなくなるため、
 	// alternate screen に入るだけにして、ホイールを ↑/↓ キーに変換するターミナルの機能に任せる。
-	p := tea.NewProgram(ui.NewModel(client, tracker, *interval), tea.WithAltScreen())
+	p := tea.NewProgram(ui.NewModel(client, tracker, *interval, *showURL), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "gh-timeline:", err)
 		os.Exit(1)
@@ -78,7 +79,7 @@ func main() {
 }
 
 // runDump は TUI を介さず、初回ポーリングと同じ内容をテキストで出力する。
-func runDump(client *github.Client, tracker *timeline.Tracker) error {
+func runDump(client *github.Client, tracker *timeline.Tracker, showURL bool) error {
 	now := time.Now()
 	since := tracker.Since(now)
 	result, err := client.Search(context.Background(), since)
@@ -90,7 +91,7 @@ func runDump(client *github.Client, tracker *timeline.Tracker) error {
 		fmt.Printf("No updates since %s.\n", since.Format("01/02 15:04"))
 		return nil
 	}
-	fmt.Println(ui.RenderBatch(batch, time.Time{}, result.Viewer, 0))
+	fmt.Println(ui.RenderBatch(batch, time.Time{}, ui.RenderOptions{Viewer: result.Viewer, ShowURL: showURL}))
 	if result.Truncated {
 		fmt.Println("(some results were truncated: over 100 hits)")
 	}
