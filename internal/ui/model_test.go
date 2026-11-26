@@ -3,12 +3,15 @@ package ui
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/ToshihitoKon/gh-timeline/internal/github"
 	"github.com/ToshihitoKon/gh-timeline/internal/timeline"
@@ -46,7 +49,7 @@ func TestRenderBatch_GroupsEventsByItemNewestFirst(t *testing.T) {
 			other,
 		},
 	}
-	got := ansi.Strip(RenderBatch(b, time.Time{}, "me", 0))
+	got := ansi.Strip(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me"}))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
 		"o/r PR#7 Add feature", // 最新のイベントが新しい PR / issue が上
@@ -77,7 +80,7 @@ func TestRenderBatch_CollapsesNoisyEvents(t *testing.T) {
 			ev(github.EventClosed, "bot", 13, 12),
 		)},
 	}
-	got := ansi.Strip(RenderBatch(b, time.Time{}, "me", 0))
+	got := ansi.Strip(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me"}))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
 		"o/r PR#7 Add feature",
@@ -97,7 +100,7 @@ func TestRenderBatch_DateShownWhenDayChanges(t *testing.T) {
 		CheckedAt: time.Date(2026, 11, 20, 0, 3, 0, 0, jst),
 		Entries:   []timeline.Entry{entry(), entry(yesterday)},
 	}
-	got := ansi.Strip(RenderBatch(b, prev, "me", 0))
+	got := ansi.Strip(RenderBatch(b, prev, RenderOptions{Viewer: "me"}))
 	want := strings.Join([]string{
 		"--- 11/20 00:03 ---",
 		// イベントの無い更新は updatedAt を "updated" として、誰の操作か分からないので "-" で出す
@@ -119,7 +122,7 @@ func TestRenderBatch_SameMinuteEventsNewestFirstAndEmptyTargetOmitted(t *testing
 		CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
 		Entries:   []timeline.Entry{entry(requested, assigned)},
 	}
-	got := ansi.Strip(RenderBatch(b, time.Time{}, "me", 0))
+	got := ansi.Strip(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me"}))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
 		"o/r PR#7 Add feature",
@@ -133,10 +136,153 @@ func TestRenderBatch_SameMinuteEventsNewestFirstAndEmptyTargetOmitted(t *testing
 
 func TestRenderBatch_TruncatesToWidth(t *testing.T) {
 	b := timeline.Batch{CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst), Entries: []timeline.Entry{entry()}}
-	for _, line := range strings.Split(RenderBatch(b, time.Time{}, "me", 12), "\n") {
+	for _, line := range strings.Split(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me", Width: 12}), "\n") {
 		if w := ansi.StringWidth(line); w > 12 {
 			t.Errorf("line %q width = %d, want <= 12", ansi.Strip(line), w)
 		}
+	}
+}
+
+const itemURL = "https://github.com/o/r/pull/7"
+
+func entryWithURL(events ...github.Event) timeline.Entry {
+	e := entry(events...)
+	e.Item.URL = itemURL
+	return e
+}
+
+func TestRenderBatch_ShowURLAddsURLLineUnderHeader(t *testing.T) {
+	noURL := entry(ev(github.EventCommented, "bob", 13, 55))
+	noURL.Item.Number = 8
+	b := timeline.Batch{
+		CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
+		Entries:   []timeline.Entry{entryWithURL(ev(github.EventApproved, "alice", 14, 0)), noURL},
+	}
+	got := ansi.Strip(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me", ShowURL: true}))
+	want := strings.Join([]string{
+		"--- 14:05 ---",
+		"o/r PR#7 Add feature",
+		"  " + itemURL,
+		"  14:00 approved alice",
+		"o/r PR#8 Add feature", // URL が取れなかった分は URL の行を出さない
+		"  13:55 commented bob",
+	}, "\n")
+	if got != want {
+		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestRenderBatch_WithoutShowURLHasNoURLLine(t *testing.T) {
+	b := timeline.Batch{CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst), Entries: []timeline.Entry{entryWithURL()}}
+	if got := RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me"}); strings.Contains(got, itemURL) {
+		t.Errorf("RenderBatch contains the URL without ShowURL:\n%q", got)
+	}
+}
+
+// splitHyperlink は line を、url へのリンクより前・リンクの中・リンクより後ろに分ける。
+// リンクが無い、または閉じていなければ ok が false になる。
+func splitHyperlink(line, url string) (before, inside, after string, ok bool) {
+	before, rest, found := strings.Cut(line, ansi.SetHyperlink(url))
+	if !found {
+		return "", "", "", false
+	}
+	inside, after, found = strings.Cut(rest, ansi.ResetHyperlink())
+	return before, inside, after, found
+}
+
+func TestRenderBatch_HyperlinksRepoAndNumber(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		actor string
+	}{
+		{"others acted", "alice"},
+		// 自分の操作だけの見出しは色を落として薄くするので、それでもリンクが残ることを確かめる
+		{"only viewer acted", "me"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := timeline.Batch{
+				CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
+				Entries:   []timeline.Entry{entryWithURL(ev(github.EventCommented, tc.actor, 14, 0))},
+			}
+			lines := strings.Split(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me", ShowURL: true, UseHyperlinks: true}), "\n")
+
+			before, inside, after, ok := splitHyperlink(lines[1], itemURL)
+			if !ok || before != "" || ansi.Strip(inside) != "o/r PR#7" || ansi.Strip(after) != " Add feature" {
+				t.Errorf("header %q: want only %q linked to %s", lines[1], "o/r PR#7", itemURL)
+			}
+			// URL の行は字下げを除いた URL の部分だけをリンクにする
+			before, inside, after, ok = splitHyperlink(lines[2], itemURL)
+			if !ok || before != eventIndent || ansi.Strip(inside) != itemURL || after != "" {
+				t.Errorf("URL line %q: want only the URL linked", lines[2])
+			}
+			if event := lines[3]; strings.Contains(event, "\x1b]8;") {
+				t.Errorf("event line %q has a hyperlink", event)
+			}
+		})
+	}
+}
+
+// underlineSGR は下線を含む SGR。lipgloss は下線を色や太字と 1 つの SGR にまとめて出す（\x1b[1;4;38;5;42m など）。
+var underlineSGR = regexp.MustCompile(`\x1b\[(?:[0-9:]*;)*4(?:;[0-9:]*)*m`)
+
+func TestRenderBatch_LinkedTextIsUnderlined(t *testing.T) {
+	// テストの実行環境は色を出さない設定になり、下線も出なくなるため、色を出す設定に切り替える
+	prevProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prevProfile) })
+
+	b := timeline.Batch{
+		CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
+		Entries:   []timeline.Entry{entryWithURL(ev(github.EventApproved, "alice", 14, 0))},
+	}
+	linked := strings.Split(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me", ShowURL: true, UseHyperlinks: true}), "\n")
+	for _, line := range linked[1:3] { // 見出し行と URL の行
+		_, inside, after, ok := splitHyperlink(line, itemURL)
+		if !ok || !underlineSGR.MatchString(inside) {
+			t.Errorf("linked part of %q is not underlined", line)
+		}
+		// 見出しのタイトルなど、リンクの外には下線を引かない
+		if underlineSGR.MatchString(after) {
+			t.Errorf("text after the link in %q is underlined", line)
+		}
+	}
+	if event := linked[3]; underlineSGR.MatchString(event) {
+		t.Errorf("event line %q is underlined", event)
+	}
+
+	// -dump のようにリンクにしないときは、下線も引かない
+	for _, line := range strings.Split(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me", ShowURL: true}), "\n") {
+		if underlineSGR.MatchString(line) {
+			t.Errorf("line %q is underlined without UseHyperlinks", line)
+		}
+	}
+}
+
+func TestRenderBatch_NoHyperlinksUnlessRequested(t *testing.T) {
+	b := timeline.Batch{CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst), Entries: []timeline.Entry{entryWithURL()}}
+	// -dump の出力にエスケープシーケンスを混ぜない
+	if got := RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me", ShowURL: true}); strings.Contains(got, "\x1b]8;") {
+		t.Errorf("RenderBatch has a hyperlink without UseHyperlinks:\n%q", got)
+	}
+}
+
+func TestRenderBatches_TruncatedHeaderKeepsHyperlinkClosed(t *testing.T) {
+	b := timeline.Batch{CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst), Entries: []timeline.Entry{entryWithURL()}}
+	got := RenderBatches([]timeline.Batch{b}, 1, RenderOptions{Viewer: "me", Width: 12, UseHyperlinks: true})
+	// 欄の 4 桁を除いた 8 桁に切り詰めると、リンクの途中（"o/r PR#…"）で切れる
+	header := strings.Split(got, "\n")[1]
+	if _, _, _, ok := splitHyperlink(header, itemURL); !ok {
+		t.Errorf("truncated header %q does not keep the hyperlink closed", header)
+	}
+}
+
+func TestModel_ViewKeepsHyperlinks(t *testing.T) {
+	item := newItem(7, 1)
+	item.URL = itemURL
+	m := applyFetch(t, newReadyModel(fakeFetcher{}), item)
+	// viewport や lipgloss を通しても OSC 8 が消えずに端末へ届く
+	if view := m.View(); !strings.Contains(view, ansi.SetHyperlink(itemURL)) {
+		t.Errorf("view has no hyperlink to %s:\n%q", itemURL, view)
 	}
 }
 
@@ -159,7 +305,7 @@ func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 }
 
 func newReadyModel(f Fetcher) Model {
-	m := NewModel(f, timeline.NewTracker(time.Hour), 5*time.Minute)
+	m := NewModel(f, timeline.NewTracker(time.Hour), 5*time.Minute, false)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
 	return next.(Model)
 }
@@ -216,7 +362,7 @@ func batchAt(hh, mm int) timeline.Batch {
 }
 
 func TestRenderBatches_NewestBatchOnTop(t *testing.T) {
-	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), batchAt(11, 50)}, 0, "me", 0))
+	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), batchAt(11, 50)}, 0, RenderOptions{Viewer: "me"}))
 	second := strings.Index(got, "--- 11:45 ---")
 	if !strings.HasPrefix(got, "▐ --- 11:50 ---") || second < 0 {
 		t.Errorf("want 11:50 block first, got\n%s", got)
@@ -231,7 +377,7 @@ func TestRenderBatches_GraphAndUnreadMarkerAtLeftEdge(t *testing.T) {
 	issue.Item.Title = "Bug"
 	newer.Entries = append(newer.Entries, issue)
 
-	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), newer}, 1, "me", 0))
+	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), newer}, 1, RenderOptions{Viewer: "me"}))
 	want := strings.Join([]string{
 		// 区切り行は丸と罫線の列から書き始め、新着の印の列には入らない
 		"▐ --- 11:50 ---",
@@ -251,7 +397,7 @@ func TestRenderBatches_GraphAndUnreadMarkerAtLeftEdge(t *testing.T) {
 
 func TestRenderBatches_TruncatesIncludingMarker(t *testing.T) {
 	for _, width := range []int{1, 12} {
-		for _, line := range strings.Split(RenderBatches([]timeline.Batch{batchAt(11, 45)}, 0, "me", width), "\n") {
+		for _, line := range strings.Split(RenderBatches([]timeline.Batch{batchAt(11, 45)}, 0, RenderOptions{Viewer: "me", Width: width}), "\n") {
 			// 極端に狭い端末では、欄の 4 桁に加えて本文を 1 桁（省略記号）だけ残すため、その分まで許す
 			if w := ansi.StringWidth(line); w > max(width, 5) {
 				t.Errorf("width %d: line %q width = %d", width, ansi.Strip(line), w)
@@ -261,7 +407,7 @@ func TestRenderBatches_TruncatesIncludingMarker(t *testing.T) {
 }
 
 func TestModel_ScrollFollowsTopOrKeepsReadingPosition(t *testing.T) {
-	m := NewModel(fakeFetcher{}, timeline.NewTracker(time.Hour), 5*time.Minute)
+	m := NewModel(fakeFetcher{}, timeline.NewTracker(time.Hour), 5*time.Minute, false)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: chromeLines + 3})
 	m = next.(Model)
 	m.batches = []timeline.Batch{batchAt(11, 40), batchAt(11, 45)}
@@ -360,7 +506,7 @@ func TestModel_LaterFetchIsUnreadUntilSpace(t *testing.T) {
 }
 
 func TestModel_SpaceKeepsScrollPosition(t *testing.T) {
-	m := NewModel(fakeFetcher{}, timeline.NewTracker(time.Hour), 5*time.Minute)
+	m := NewModel(fakeFetcher{}, timeline.NewTracker(time.Hour), 5*time.Minute, false)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: chromeLines + 3})
 	m = next.(Model)
 	m.batches = []timeline.Batch{batchAt(11, 40), batchAt(11, 45), batchAt(11, 50)}

@@ -42,11 +42,19 @@ owner/repo IS#42 Crash on startup
   13:58 commented frank
 ```
 
-- `owner/repo PR#130 Fix typo`: the repository, number (`IS#` for issues), and title. The number is colored by state: green for open, gray for draft, purple for merged, red for closed
+- `owner/repo PR#130 Fix typo`: the repository, number (`IS#` for issues), and title. The number is colored by state: green for open, gray for draft, purple for merged, red for closed. In the TUI, the repository and number are underlined and link to the pull request or issue; click them to open it in your browser (the key to hold while clicking depends on your terminal)
 - `14:01`: when it happened (`11/19 23:59` if it was on an earlier day)
 - `review requested`: the action
 - `dave`: who did it
 - `→ you, erin`: who was asked to review or assigned, for those actions
+
+With `-show-url`, the URL follows each heading:
+
+```text
+owner/repo PR#130 Fix typo
+  https://github.com/owner/repo/pull/130
+  14:03 approved erin
+```
 
 Consecutive events of the same kind by the same person are combined, such as `commented (3)` or `→ bob, carol`. Your own actions are dimmed, and so is the heading when all of its events are yours.
 
@@ -101,6 +109,7 @@ gh timeline -dump
 - `-interval`: how often to check for updates (default `5m`, minimum `30s`)
 - `-since`: how far back to look on startup (default `30m`)
 - `-team-reviews`: also follow pull requests whose review is requested from your teams
+- `-show-url`: show the URL under each pull request and issue, in both the TUI and `-dump`
 - `-dump`: print the first poll once and exit, without starting the TUI
 - `-version`: print the version and exit
 
@@ -128,6 +137,16 @@ With `set -g mouse on`, tmux does not pass the mouse wheel to full-screen apps t
 set -g @plugin 'nhdaly/tmux-better-mouse-mode'
 set -g @emulate-scroll-for-no-mouse-alternate-buffer "on"
 ```
+
+### Links in tmux
+
+tmux passes the heading links to your terminal only when the terminal has the `hyperlinks` feature. Add this to `.tmux.conf`:
+
+```tmux
+set -as terminal-features ",*:hyperlinks"
+```
+
+Then reload the config with `tmux source-file ~/.tmux.conf` and detach and reattach, because tmux sets the features of a terminal when it attaches. `tmux display -p '#{client_termfeatures}'` lists `hyperlinks` once it takes effect. Without it, the headings cannot be clicked.
 
 ## Limitations
 

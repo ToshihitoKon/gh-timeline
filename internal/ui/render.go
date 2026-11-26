@@ -53,6 +53,7 @@ type lineKind int
 const (
 	lineSeparator lineKind = iota
 	lineItemHeader
+	lineURL
 	lineEvent
 )
 
@@ -61,10 +62,23 @@ type batchLine struct {
 	text string
 }
 
+// RenderOptions は Batch の描画のしかた。
+type RenderOptions struct {
+	// Viewer は自分のログイン名。自分の操作を薄く出すために使う。
+	Viewer string
+	// Width は行を切り詰める表示幅。0 以下なら切り詰めない。
+	Width int
+	// ShowURL は見出し行の次に PR / issue の URL の行を出すか。
+	ShowURL bool
+	// UseHyperlinks は見出し行と URL の行を OSC 8 のリンクにするか。
+	// -dump の出力をパイプで受けた側に、見えないエスケープシーケンスを混ぜないよう、TUI だけで使う。
+	UseHyperlinks bool
+}
+
 // RenderBatches は全 Batch を区切り行付きで、新しいものを上にして描画する。
 // batches は古い順で渡し、先頭から readCount 件を既読、それより新しいものを未読として
-// 各行の左端の欄に印・丸・罫線を付ける。width が 0 以下なら行を切り詰めない。
-func RenderBatches(batches []timeline.Batch, readCount int, viewer string, width int) string {
+// 各行の左端の欄に印・丸・罫線を付ける。
+func RenderBatches(batches []timeline.Batch, readCount int, opts RenderOptions) string {
 	blocks := make([]string, 0, len(batches))
 	for i := len(batches) - 1; i >= 0; i-- {
 		var prev time.Time
@@ -73,12 +87,12 @@ func RenderBatches(batches []timeline.Batch, readCount int, viewer string, width
 		}
 		isUnread := i >= readCount
 		var lines []string
-		for _, l := range batchLines(batches[i], prev, viewer) {
+		for _, l := range batchLines(batches[i], prev, opts) {
 			prefix := gutter(l.kind, isUnread)
-			bodyWidth := width
-			if width > 0 {
+			bodyWidth := opts.Width
+			if opts.Width > 0 {
 				// 欄より狭い端末でも本文は 1 桁残す。0 にすると truncate が「切り詰めない」と扱うため。
-				bodyWidth = max(width-ansi.StringWidth(prefix), 1)
+				bodyWidth = max(opts.Width-ansi.StringWidth(prefix), 1)
 			}
 			lines = append(lines, prefix+truncate(l.text, bodyWidth))
 		}
@@ -97,7 +111,7 @@ func gutter(kind lineKind, isUnread bool) string {
 	switch kind {
 	case lineItemHeader:
 		return newMark + " " + graphStyle.Render(itemMarker) + " "
-	case lineEvent:
+	case lineURL, lineEvent:
 		return newMark + " " + graphStyle.Render(eventMarker) + " "
 	}
 	return newMark + " "
@@ -107,23 +121,42 @@ func gutter(kind lineKind, isUnread bool) string {
 // "owner/repo PR#123 タイトル" の見出し行と、字下げした "時刻 アクション ユーザー" のイベント行で描画する。
 // PR / issue は最新のイベントが新しい順、イベントも新しい順に並べる。
 // prevCheckedAt は 1 つ前（時刻が古い側）の Batch の時刻で、日付が変わったときだけ区切り行に日付を出す。
-func RenderBatch(b timeline.Batch, prevCheckedAt time.Time, viewer string, width int) string {
+func RenderBatch(b timeline.Batch, prevCheckedAt time.Time, opts RenderOptions) string {
 	var lines []string
-	for _, l := range batchLines(b, prevCheckedAt, viewer) {
-		lines = append(lines, truncate(l.text, width))
+	for _, l := range batchLines(b, prevCheckedAt, opts) {
+		lines = append(lines, truncate(l.text, opts.Width))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func batchLines(b timeline.Batch, prevCheckedAt time.Time, viewer string) []batchLine {
+func batchLines(b timeline.Batch, prevCheckedAt time.Time, opts RenderOptions) []batchLine {
 	lines := []batchLine{{kind: lineSeparator, text: separator(b.CheckedAt, prevCheckedAt)}}
 	for _, blk := range batchBlocks(b) {
-		lines = append(lines, batchLine{kind: lineItemHeader, text: renderItemHeader(blk, viewer)})
+		url := blk.Item.URL
+		isLinked := opts.UseHyperlinks && url != ""
+		var linkURL string
+		if isLinked {
+			linkURL = url
+		}
+		lines = append(lines, batchLine{kind: lineItemHeader, text: renderItemHeader(blk, opts.Viewer, linkURL)})
+		if opts.ShowURL && url != "" {
+			urlText := faintStyle.Underline(isLinked).Render(url)
+			lines = append(lines, batchLine{kind: lineURL, text: eventIndent + linkIf(isLinked, urlText, url)})
+		}
 		for _, ev := range blk.Events {
-			lines = append(lines, batchLine{kind: lineEvent, text: renderEventLine(ev, b.CheckedAt, viewer)})
+			lines = append(lines, batchLine{kind: lineEvent, text: renderEventLine(ev, b.CheckedAt, opts.Viewer)})
 		}
 	}
 	return lines
+}
+
+// linkIf は isLinked のとき text を url への OSC 8 のリンクで囲む。
+// 切り詰めで本文が切れても ansi.Truncate はエスケープシーケンスを残すので、リンクは閉じたままになる。
+func linkIf(isLinked bool, text, url string) string {
+	if !isLinked {
+		return text
+	}
+	return ansi.SetHyperlink(url) + text + ansi.ResetHyperlink()
 }
 
 // truncate は viewport が長い行を折り返さずにはみ出させるため、表示幅で切り詰める。
@@ -185,22 +218,24 @@ const eventIndent = "  "
 
 // renderItemHeader は "owner/repo PR#123 Fix typo" の見出し行を描画する。
 // PR#123 / IS#45 の部分は PR / issue の状態（open / draft / merged / closed）の色で塗る。
-func renderItemHeader(blk itemBlock, viewer string) string {
+// linkURL が空でなければ "owner/repo PR#123" の部分を linkURL へのリンクにして下線を引く。
+// タイトルまで含めると、すべての見出しに長い下線が付いて画面がうるさくなるため、タイトルは含めない。
+func renderItemHeader(blk itemBlock, viewer, linkURL string) string {
 	item := blk.Item
 	kind := "IS"
 	if item.Kind == github.KindPullRequest {
 		kind = "PR"
 	}
-	line := strings.Join([]string{
-		repoStyle.Render(item.Repo),
-		itemStateStyle(item).Bold(true).Render(fmt.Sprintf("%s#%d", kind, item.Number)),
-		textStyle.Render(item.Title),
-	}, " ")
+	repoSt, numberSt, gapSt, titleSt := repoStyle, itemStateStyle(item).Bold(true), lipgloss.NewStyle(), textStyle
 	isOnlyViewer := !slices.ContainsFunc(blk.Events, func(ev displayEvent) bool { return ev.Actor != viewer })
 	if isOnlyViewer {
-		return faintStyle.Render(ansi.Strip(line))
+		repoSt, numberSt, gapSt, titleSt = faintStyle, faintStyle, faintStyle, faintStyle
 	}
-	return line
+	isLinked := linkURL != ""
+	ref := repoSt.Underline(isLinked).Render(item.Repo) +
+		gapSt.Underline(isLinked).Render(" ") +
+		numberSt.Underline(isLinked).Render(fmt.Sprintf("%s#%d", kind, item.Number))
+	return linkIf(isLinked, ref, linkURL) + gapSt.Render(" ") + titleSt.Render(item.Title)
 }
 
 // renderEventLine は "  14:01 review requested dave → you, erin" のイベント行を描画する。

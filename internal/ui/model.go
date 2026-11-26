@@ -52,6 +52,7 @@ type Model struct {
 	fetcher  Fetcher
 	tracker  *timeline.Tracker
 	interval time.Duration
+	showURL  bool
 
 	viewer        string
 	batches       []timeline.Batch
@@ -77,14 +78,14 @@ type Model struct {
 	width    int
 }
 
-// NewModel は Model を作る。
-func NewModel(fetcher Fetcher, tracker *timeline.Tracker, interval time.Duration) Model {
+// NewModel は Model を作る。showURL が true なら PR / issue の見出し行の次に URL の行を出す。
+func NewModel(fetcher Fetcher, tracker *timeline.Tracker, interval time.Duration, showURL bool) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Spinner{
 		Frames: []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"},
 		FPS:    spinnerFrameInterval,
 	}
-	return Model{fetcher: fetcher, tracker: tracker, interval: interval, spinner: sp}
+	return Model{fetcher: fetcher, tracker: tracker, interval: interval, showURL: showURL, spinner: sp}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -227,7 +228,12 @@ func (m Model) renderTimeline() string {
 		}
 		return faintStyle.Render(fmt.Sprintf("No updates since %s.", m.watchingSince.Format("01/02 15:04")))
 	}
-	return RenderBatches(m.batches, m.readBatchCount, m.viewer, m.width)
+	return RenderBatches(m.batches, m.readBatchCount, RenderOptions{
+		Viewer:        m.viewer,
+		Width:         m.width,
+		ShowURL:       m.showURL,
+		UseHyperlinks: true,
+	})
 }
 
 func (m Model) View() string {
