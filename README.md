@@ -38,7 +38,7 @@ owner/repo IS#42 Crash on startup
   13:58 commented frank
 ```
 
-- `owner/repo PR#130 Fix typo`: the repository, number (`IS#` for issues), and title. The number is colored by state: green for open, gray for draft, purple for merged, red for closed. In the TUI, the repository and number are underlined and link to the pull request or issue; click them to open it in your browser (the key to hold while clicking depends on your terminal)
+- `owner/repo PR#130 Fix typo`: the repository, number (`IS#` for issues), and title. The number is colored by state: green for open, gray for draft, purple for merged pull requests and issues closed as completed, red for other closed ones. In the TUI, the repository and number are underlined and link to the pull request or issue; click them to open it in your browser (the key to hold while clicking depends on your terminal)
 - `14:01`: when it happened (`11/19 23:59` if it was on an earlier day)
 - `review requested`: the action
 - `dave`: who did it
@@ -59,6 +59,7 @@ Actions:
 - `commented`, `approved`, `changes requested`, `reviewed`
 - `replied`: replies to existing review comments
 - `pushed N commits`, `force-pushed`
+  - Commits made earlier and pushed later are shown too. Their time is when they were pushed, or when they were made if gh-timeline found the pull request in an earlier poll.
 - `merged`, `closed`, `reopened`
 - `review requested`, `assigned`
 - `ready for review`, `converted to draft`
@@ -104,10 +105,10 @@ gh timeline -dump
 ### Flags
 
 - `-interval`: how often to check for updates (default `5m`, minimum `1m`)
-- `-since`: how far back to look on startup (default `30m`)
+- `-since`: how far back to look on startup (default `30m`, minimum `0`)
 - `-team-reviews`: also follow pull requests whose review is requested from your teams
 - `-show-url`: show the URL under each pull request and issue, in both the TUI and `-dump`
-- `-dump`: print the first poll once and exit, without starting the TUI
+- `-dump`: print the first poll once and exit, without starting the TUI. It gives up with an error if the poll does not finish within a minute
 - `-version`: print the version and exit
 
 ### Keys
@@ -122,7 +123,9 @@ gh timeline -dump
 
 While you are at the top, new blocks keep the view at the top. While you are reading older blocks, the view stays where you are.
 
-If a poll fails, the error appears in the footer and the next successful poll also picks up what the failed one missed.
+If a poll fails or does not finish within a minute, the error appears in the footer and the next successful poll also picks up what the failed one missed.
+
+If GitHub returns only part of the results, for example when your token is not authorized for an organization that enforces SAML SSO, a warning appears in the footer and the rest is shown. Later polls may not pick up what was missing. `-dump` prints the same warning to stderr.
 
 ## Tips
 
@@ -148,7 +151,7 @@ Then reload the config with `tmux source-file ~/.tmux.conf` and detach and reatt
 
 ## Limitations
 
-- Up to 100 results per search condition per poll. A warning appears in the footer if there are more.
-- Up to the 10 most recent events per pull request or issue.
+- Up to 100 results per search condition per poll. A warning appears in the footer, or at the end of the `-dump` output, if there are more.
+- Per poll, up to the 10 most recent events per issue, and up to the 10 most recent reviews and the 10 most recent other events per pull request. Older ones are not shown.
 - The timeline is kept in memory only. After a restart, it starts again from `-since`.
 - Colors are tuned for dark terminal backgrounds.
