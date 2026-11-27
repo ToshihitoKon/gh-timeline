@@ -15,6 +15,11 @@ import (
 // 同じブランチの作成・削除なども同じ一覧に混ざるため余裕を持たせている。
 const pushActivityPageSize = 30
 
+// pushFetchConcurrency は push の取得を同時に行う PR の数の上限。
+// GitHub は同じ利用者からの同時リクエストを secondary rate limit で制限するため、
+// 1 件ずつ取るより速くなる範囲で小さく抑えている。
+const pushFetchConcurrency = 4
+
 // push はブランチへの 1 回の push。
 type push struct {
 	After string // push 後の head のコミット

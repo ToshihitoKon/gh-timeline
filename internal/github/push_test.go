@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -158,5 +159,107 @@ func TestClientSearch_KeepsCommittedDateWhenActivityFails(t *testing.T) {
 	}
 	if got, want := strings.Join(commitTimes(t, got.Items[0]), " "), "01:00 01:10 01:20"; got != want {
 		t.Errorf("commit times = %s, want committedDate %s", got, want)
+	}
+}
+
+// prsResponse は、pushedPRResponse と同じコミットを持つ PR を n 件返す検索結果を作る。
+func prsResponse(n int) string {
+	nodes := make([]string, n)
+	for i := range nodes {
+		nodes[i] = fmt.Sprintf(`
+	    {"__typename": "PullRequest", "number": %d, "title": "PR %d", "url": "https://github.com/o/r/pull/%d",
+	     "state": "OPEN", "updatedAt": "2026-11-20T03:00:00Z", "author": {"login": "me"}, "repository": {"nameWithOwner": "o/r"},
+	     "headRefName": "feature/%d", "headRepository": {"nameWithOwner": "o/r"},
+	     "timelineItems": {"nodes": [
+	       {"__typename": "PullRequestCommit", "commit": {"oid": "c1", "committedDate": "2026-11-20T01:00:00Z", "author": {"user": {"login": "me"}}}},
+	       {"__typename": "PullRequestCommit", "commit": {"oid": "c2", "committedDate": "2026-11-20T01:10:00Z", "author": {"user": {"login": "me"}}}},
+	       {"__typename": "PullRequestCommit", "commit": {"oid": "c3", "committedDate": "2026-11-20T01:20:00Z", "author": {"user": {"login": "me"}}}}
+	     ]},
+	     "reviews": {"nodes": []}}`, i+1, i+1, i+1, i+1)
+	}
+	return fmt.Sprintf(`{"data": {
+	  "viewer": {"login": "me"},
+	  "authored": {"issueCount": %d, "nodes": [%s]},
+	  "assigned": {"issueCount": 0, "nodes": []},
+	  "reviewRequested": {"issueCount": 0, "nodes": []},
+	  "reviewedBy": {"issueCount": 0, "nodes": []}
+	}}`, n, strings.Join(nodes, ","))
+}
+
+// blockingGH は activity API の呼び出しを release が閉じられるまで止め、同時に進行中だった呼び出しの最大数を記録する。
+// 進行中の呼び出しが pushFetchConcurrency に達したら reachedLimit を閉じる。
+type blockingGH struct {
+	searchResponse string
+	release        chan struct{}
+	reachedLimit   chan struct{}
+
+	mu          sync.Mutex
+	inFlight    int
+	maxInFlight int
+	calls       int
+}
+
+func newBlockingGH(searchResponse string) *blockingGH {
+	return &blockingGH{searchResponse: searchResponse, release: make(chan struct{}), reachedLimit: make(chan struct{})}
+}
+
+func (g *blockingGH) run(_ context.Context, args ...string) ([]byte, error) {
+	if args[1] == "graphql" {
+		return []byte(g.searchResponse), nil
+	}
+	g.mu.Lock()
+	g.calls++
+	g.inFlight++
+	g.maxInFlight = max(g.maxInFlight, g.inFlight)
+	if g.inFlight == pushFetchConcurrency {
+		select {
+		case <-g.reachedLimit:
+		default:
+			close(g.reachedLimit)
+		}
+	}
+	g.mu.Unlock()
+
+	<-g.release
+
+	g.mu.Lock()
+	g.inFlight--
+	g.mu.Unlock()
+	return []byte(pushActivityResponse), nil
+}
+
+func TestClientSearch_FetchesPushesInParallelUpToLimit(t *testing.T) {
+	numPRs := pushFetchConcurrency*2 + 1
+	gh := newBlockingGH(prsResponse(numPRs))
+
+	var got SearchResult
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		got, err = NewClient(gh.run, false).Search(context.Background(), time.Now(), nil)
+	}()
+
+	select {
+	case <-gh.reachedLimit:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("activity calls never reached %d at once, want them run in parallel", pushFetchConcurrency)
+	}
+	close(gh.release)
+	<-done
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gh.maxInFlight > pushFetchConcurrency {
+		t.Errorf("max concurrent activity calls = %d, want at most %d", gh.maxInFlight, pushFetchConcurrency)
+	}
+	if gh.calls != numPRs {
+		t.Errorf("activity calls = %d, want %d (one per PR)", gh.calls, numPRs)
+	}
+	for _, item := range got.Items {
+		if got, want := strings.Join(commitTimes(t, item), " "), "02:30 02:30 02:59"; got != want {
+			t.Errorf("%s commit times = %s, want %s", item.Key(), got, want)
+		}
 	}
 }
