@@ -447,7 +447,54 @@ func TestBatchRenderCache_RendersOnlyNewBatches(t *testing.T) {
 	}
 }
 
-func TestBatchRenderCache_RerendersWhenReadStateOrOptionsChange(t *testing.T) {
+func TestBatchRenderCache_KeepsRenderedBatchesOnResizeAndMarkRead(t *testing.T) {
+	opts := RenderOptions{Viewer: "me", Width: 80, ShowGutter: true}
+	var c batchRenderCache
+	c.render([]timeline.Batch{batchAt(11, 45)}, 0, opts)
+
+	// 描画済みの Batch は中身を見直さないことを、中身を差し替えた Batch で確かめる
+	changed := batchAt(11, 45)
+	changed.Entries[0].Item.Title = "Changed"
+	batches := []timeline.Batch{changed}
+
+	narrow := opts
+	narrow.Width = 12
+	resized := c.render(batches, 0, narrow)
+	if got := ansi.Strip(resized); strings.Contains(got, "Changed") {
+		t.Errorf("rendered batch was rendered again on resize:\n%s", got)
+	}
+	for _, line := range strings.Split(resized, "\n") {
+		if w := ansi.StringWidth(line); w > narrow.Width {
+			t.Errorf("line %q width = %d, want <= %d after resize", ansi.Strip(line), w, narrow.Width)
+		}
+	}
+
+	read := ansi.Strip(c.render(batches, 1, opts))
+	if strings.Contains(read, "Changed") {
+		t.Errorf("rendered batch was rendered again on mark read:\n%s", read)
+	}
+	if strings.Contains(read, unreadMarker) {
+		t.Errorf("unread marker remains after mark read:\n%s", read)
+	}
+}
+
+func TestRenderBatches_ViewerEventLineIsOnlyFaint(t *testing.T) {
+	// テストの実行環境は色を出さない設定になるため、色を出す設定に切り替える
+	prevProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prevProfile) })
+
+	request := ev(github.EventReviewRequested, "me", 14, 0)
+	request.Target = "alice"
+	b := timeline.Batch{CheckedAt: timeAt(14, 5), Entries: []timeline.Entry{entry(request)}}
+	event := strings.Split(renderBatch(b, RenderOptions{Viewer: "me"}), "\n")[2]
+	// 時刻・アクション・ユーザーごとの色を付けず、行全体を 1 つの faint で囲む
+	if want := faintStyle.Render("  14:00 review requested me → alice"); event != want {
+		t.Errorf("viewer's event line = %q, want %q", event, want)
+	}
+}
+
+func TestBatchRenderCache_MatchesUncachedRenderWhenReadStateOrOptionsChange(t *testing.T) {
 	batches := []timeline.Batch{batchAt(11, 40), batchAt(11, 45), batchAt(11, 50)}
 	steps := []struct {
 		name      string

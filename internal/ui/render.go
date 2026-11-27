@@ -54,11 +54,14 @@ const (
 	lineItemHeader
 	lineURL
 	lineEvent
+	lineKindCount
 )
 
+// batchLine は欄を付けず、切り詰める前の 1 行。
 type batchLine struct {
-	kind lineKind
-	text string
+	kind  lineKind
+	text  string
+	width int // text の表示幅
 }
 
 // RenderOptions は Batch の描画のしかた。
@@ -86,67 +89,102 @@ func RenderBatches(batches []timeline.Batch, readCount int, opts RenderOptions) 
 	return cache.render(batches, readCount, opts)
 }
 
-// batchRenderCache は Batch ごとの描画結果を持ち、前回から描画のしかたも既読かどうかも
-// 変わっていない Batch を描き直さずに済ませる。Batch は追記されるだけで中身が変わらない前提で、
-// batches[i] の描画結果を blocks[i] に持つ。
+// batchRenderCache は Batch ごとに、欄を付けず切り詰める前の行を持ち、描画済みの Batch を描き直さずに済ませる。
+// 欄と切り詰めは結合するときに付けるため、既読にしたときや端末幅を変えたときも描き直さない。
+// Batch は追記されるだけで中身が変わらない前提で、batches[i] の行を blocks[i] に持つ。
 //
 // 保持する Batch の数に上限を設けるほうが単純だが、さかのぼって読める履歴が消えるため採らない。
 type batchRenderCache struct {
-	opts   RenderOptions
-	blocks []renderedBlock
-}
-
-type renderedBlock struct {
-	isUnread bool
-	text     string
+	// bodyOpts は blocks を描画したときの RenderOptions。行の中身を変えない Width と ShowGutter は 0 にしておく。
+	bodyOpts RenderOptions
+	blocks   [][]batchLine
 }
 
 // render は RenderBatches と同じ結果を返す。
 func (c *batchRenderCache) render(batches []timeline.Batch, readCount int, opts RenderOptions) string {
-	if opts != c.opts || len(c.blocks) > len(batches) {
-		c.opts = opts
+	bodyOpts := opts
+	bodyOpts.Width, bodyOpts.ShowGutter = 0, false
+	if bodyOpts != c.bodyOpts || len(c.blocks) > len(batches) {
+		c.bodyOpts = bodyOpts
 		c.blocks = nil
 	}
-	for i := range batches {
-		isUnread := i >= readCount
-		if i < len(c.blocks) && c.blocks[i].isUnread == isUnread {
-			continue
+	for i := len(c.blocks); i < len(batches); i++ {
+		var prev time.Time
+		if i > 0 {
+			prev = batches[i-1].CheckedAt
 		}
-		block := renderedBlock{isUnread: isUnread, text: renderBatchBlock(batches, i, isUnread, opts)}
-		if i < len(c.blocks) {
-			c.blocks[i] = block
-		} else {
-			c.blocks = append(c.blocks, block)
-		}
+		c.blocks = append(c.blocks, batchLines(batches[i], prev, bodyOpts))
 	}
 
-	texts := make([]string, len(c.blocks))
-	for i, b := range c.blocks {
-		texts[len(c.blocks)-1-i] = b.text
+	var gutters gutterSet
+	if opts.ShowGutter {
+		gutters = newGutterSet()
 	}
-	return strings.Join(texts, "\n\n")
+	var sb strings.Builder
+	for i := len(c.blocks) - 1; i >= 0; i-- {
+		if i < len(c.blocks)-1 {
+			sb.WriteString("\n\n")
+		}
+		isUnread := i >= readCount
+		for j, l := range c.blocks[i] {
+			if j > 0 {
+				sb.WriteByte('\n')
+			}
+			g := gutters.cell(l.kind, isUnread)
+			sb.WriteString(g.text)
+			sb.WriteString(fitLine(l, opts.Width, g.width))
+		}
+	}
+	return sb.String()
 }
 
-// renderBatchBlock は batches[i] を区切り行付きで描画する。
-func renderBatchBlock(batches []timeline.Batch, i int, isUnread bool, opts RenderOptions) string {
-	var prev time.Time
-	if i > 0 {
-		prev = batches[i-1].CheckedAt
+// fitLine は l を、端末幅 width から欄の幅 gutterWidth を除いた幅に切り詰める。
+// 幅に収まる行は ansi.Truncate で読み直さずに返し、描き直すたびに全履歴を走査しないようにする。
+func fitLine(l batchLine, width, gutterWidth int) string {
+	if width <= 0 {
+		return l.text
 	}
-	var lines []string
-	for _, l := range batchLines(batches[i], prev, opts) {
-		var prefix string
-		if opts.ShowGutter {
-			prefix = gutter(l.kind, isUnread)
-		}
-		bodyWidth := opts.Width
-		if opts.Width > 0 {
-			// 欄より狭い端末でも本文は 1 桁残す。0 にすると truncate が「切り詰めない」と扱うため。
-			bodyWidth = max(opts.Width-ansi.StringWidth(prefix), 1)
-		}
-		lines = append(lines, prefix+truncate(l.text, bodyWidth))
+	// 欄より狭い端末でも本文は 1 桁残す。0 にすると truncate が「切り詰めない」と扱うため。
+	bodyWidth := max(width-gutterWidth, 1)
+	if l.width <= bodyWidth {
+		return l.text
 	}
-	return strings.Join(lines, "\n")
+	return truncate(l.text, bodyWidth)
+}
+
+// gutterCell は描画済みの左端の欄と、その表示幅。
+type gutterCell struct {
+	text  string
+	width int
+}
+
+// gutterSet は左端の欄を、既読かどうかと行の種類の組み合わせごとに描画しておいたもの。
+// 欄の形はこの組み合わせの数しかないため、行ごとに描画して幅を測らずに済む。
+// ゼロ値は欄を付けないときに使い、どの行にも空の欄を返す。
+type gutterSet struct {
+	read, unread [lineKindCount]gutterCell
+}
+
+// newGutterSet は欄を描画する。パッケージ変数として一度だけ作らないのは、
+// lipgloss のカラープロファイルを後から切り替えても（テストなど）追従させるため。描画するのは 8 通りだけで、行数によらない。
+func newGutterSet() gutterSet {
+	var s gutterSet
+	for kind := range lineKindCount {
+		s.read[kind] = newGutterCell(gutter(kind, false))
+		s.unread[kind] = newGutterCell(gutter(kind, true))
+	}
+	return s
+}
+
+func newGutterCell(text string) gutterCell {
+	return gutterCell{text: text, width: ansi.StringWidth(text)}
+}
+
+func (s *gutterSet) cell(kind lineKind, isUnread bool) gutterCell {
+	if isUnread {
+		return s.unread[kind]
+	}
+	return s.read[kind]
 }
 
 // gutter は左端の欄を返す。区切り行は丸と罫線の列から書き始め、まとまりの始まりが
@@ -166,22 +204,26 @@ func gutter(kind lineKind, isUnread bool) string {
 }
 
 func batchLines(b timeline.Batch, prevCheckedAt time.Time, opts RenderOptions) []batchLine {
-	lines := []batchLine{{kind: lineSeparator, text: separator(b.CheckedAt, prevCheckedAt)}}
+	lines := []batchLine{newBatchLine(lineSeparator, separator(b.CheckedAt, prevCheckedAt))}
 	for _, blk := range batchBlocks(b) {
 		var linkURL string
 		if opts.UseHyperlinks {
 			linkURL = blk.Item.URL
 		}
-		lines = append(lines, batchLine{kind: lineItemHeader, text: renderItemHeader(blk, opts.Viewer, linkURL)})
+		lines = append(lines, newBatchLine(lineItemHeader, renderItemHeader(blk, opts.Viewer, linkURL)))
 		if url := blk.Item.URL; opts.ShowURL && url != "" {
 			urlText := faintStyle.Underline(linkURL != "").Render(url)
-			lines = append(lines, batchLine{kind: lineURL, text: eventIndent + hyperlink(urlText, linkURL)})
+			lines = append(lines, newBatchLine(lineURL, eventIndent+hyperlink(urlText, linkURL)))
 		}
 		for _, ev := range blk.Events {
-			lines = append(lines, batchLine{kind: lineEvent, text: renderEventLine(ev, b.CheckedAt, opts.Viewer)})
+			lines = append(lines, newBatchLine(lineEvent, renderEventLine(ev, b.CheckedAt, opts.Viewer)))
 		}
 	}
 	return lines
+}
+
+func newBatchLine(kind lineKind, text string) batchLine {
+	return batchLine{kind: kind, text: text, width: ansi.StringWidth(text)}
 }
 
 // hyperlink は text を url への OSC 8 のリンクで囲む。url が空なら text をそのまま返す。
@@ -264,22 +306,29 @@ func renderItemHeader(blk itemBlock, viewer, linkURL string) string {
 
 // renderEventLine は "  14:01 review requested dave → you, erin" のイベント行を描画する。
 func renderEventLine(ev displayEvent, checkedAt time.Time, viewer string) string {
+	// 自分の操作は、他の人の動きより目立たないよう、要素ごとの色を付けずに行全体を薄くする。
+	// 隠さないのは、自分の push が CI の再実行やレビューの再依頼につながる場面もあり、
+	// 時系列の文脈として残しておきたいため。
+	isViewer := ev.Actor == viewer
+	render := func(st lipgloss.Style, s string) string {
+		if isViewer {
+			return s
+		}
+		return st.Render(s)
+	}
+
 	kind := eventKindOf(ev.Type)
 	parts := []string{
-		faintStyle.Render(formatTimeOnDayOf(ev.At, checkedAt)),
-		kind.style.Render(kind.label(ev.Count)),
-		userStyle.Render(ev.Actor),
+		render(faintStyle, formatTimeOnDayOf(ev.At, checkedAt)),
+		render(kind.style, kind.label(ev.Count)),
+		render(userStyle, ev.Actor),
 	}
 	if len(ev.Targets) > 0 {
-		parts = append(parts, faintStyle.Render("→")+" "+userStyle.Render(strings.Join(ev.Targets, ", ")))
+		parts = append(parts, render(faintStyle, "→")+" "+render(userStyle, strings.Join(ev.Targets, ", ")))
 	}
 	line := eventIndent + strings.Join(parts, " ")
-
-	if ev.Actor == viewer {
-		// 自分の操作は、他の人の動きより目立たないようにする。
-		// 隠さないのは、自分の push が CI の再実行やレビューの再依頼につながる場面もあり、
-		// 時系列の文脈として残しておきたいため。
-		return faintStyle.Render(ansi.Strip(line))
+	if isViewer {
+		return faintStyle.Render(line)
 	}
 	return line
 }
