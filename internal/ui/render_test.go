@@ -40,6 +40,7 @@ func TestEventKindOf_LabelsByKindAndCount(t *testing.T) {
 		{github.EventConvertedToDraft, 1, "converted to draft"},
 		{github.EventForcePushed, 1, "force-pushed"},
 		{github.EventAssigned, 1, "assigned"},
+		{github.EventReferenced, 1, "referenced"},
 		{github.EventUpdated, 1, "updated"},
 		{github.EventType(-1), 1, "updated"}, // 表に無い種類
 	}
@@ -88,6 +89,29 @@ func TestRenderBatches_CollapsedTargetsShownOnce(t *testing.T) {
 		"--- 14:05 ---",
 		"o/r PR#7 Add feature",
 		"  13:02 review requested alice → bob",
+	}, "\n")
+	if got != want {
+		t.Errorf("RenderBatches =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestRenderBatches_ShowsReferenceSourceWithRepoOnlyFromOtherRepo(t *testing.T) {
+	samePR := ev(github.EventReferenced, "alice", 13, 0)
+	samePR.Source = &github.Ref{Kind: github.KindPullRequest, Repo: "o/r", Number: 9}
+	otherIssue := ev(github.EventReferenced, "alice", 13, 1)
+	otherIssue.Source = &github.Ref{Kind: github.KindIssue, Repo: "x/y", Number: 3}
+	unknown := ev(github.EventReferenced, "bob", 13, 2) // 参照元を読めなかった
+	b := timeline.Batch{
+		CheckedAt: timeAt(14, 5),
+		Entries:   []timeline.Entry{entry(samePR, otherIssue, unknown)},
+	}
+	got := ansi.Strip(renderBatch(b, RenderOptions{Viewer: "me"}))
+	want := strings.Join([]string{
+		"--- 14:05 ---",
+		"o/r PR#7 Add feature",
+		"  13:02 referenced bob",
+		"  13:01 referenced in x/y IS#3 alice",
+		"  13:00 referenced in PR#9 alice",
 	}, "\n")
 	if got != want {
 		t.Errorf("RenderBatches =\n%s\nwant\n%s", got, want)

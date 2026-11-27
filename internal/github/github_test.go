@@ -479,6 +479,23 @@ func TestSearchQuery_FetchesCommentsOnlyInReviewFragment(t *testing.T) {
 	}
 }
 
+// 開いている issue を PR から参照すると、GitHub は updatedAt を進めて CrossReferencedEvent だけを記録する。
+// 取らないと、その更新が "updated -" として出る。
+func TestSearchQuery_FetchesCrossReferencesOfPullRequestsAndIssues(t *testing.T) {
+	itemTypes := regexp.MustCompile(`itemTypes: \[[^\]]*\]`).FindAllString(searchFragments, -1)
+	if len(itemTypes) != 2 {
+		t.Fatalf("found %d itemTypes lists, want 2 (pull requests and issues): %q", len(itemTypes), itemTypes)
+	}
+	for _, list := range itemTypes {
+		if !strings.Contains(list, "CROSS_REFERENCED_EVENT") {
+			t.Errorf("%s does not include CROSS_REFERENCED_EVENT", list)
+		}
+	}
+	if !strings.Contains(searchFragments, "... on CrossReferencedEvent {") {
+		t.Error("timelineItem fragment does not read CrossReferencedEvent")
+	}
+}
+
 // go-gh は operationName を送らないため、送る文書の操作は 1 つでなければならない。
 func TestQueries_HaveOneOperationEach(t *testing.T) {
 	for name, query := range map[string]string{"firstPages": firstPagesQuery, "nextPage": nextPageQuery} {
