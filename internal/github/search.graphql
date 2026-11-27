@@ -48,6 +48,7 @@ fragment results on SearchResultItemConnection {
 
 fragment timelineItem on Node {
   __typename
+  id
   ... on IssueComment { createdAt author { login } }
   # comments を 10 件までにしているのは、返信だけのレビューはふつう 1 件で、
   # 返信かどうかの判定に全件は要らないため。10 件を超えるレビューは返信として扱わない。

@@ -55,6 +55,36 @@ const sampleResponse = `{
   }
 }`
 
+func TestParseResponse_SetsEventIDsWithCommitOID(t *testing.T) {
+	body := `{"data": {
+	  "viewer": {"login": "me"},
+	  "authored": {"issueCount": 1, "nodes": [
+	    {"__typename": "PullRequest", "number": 1, "updatedAt": "2026-11-20T03:00:00Z", "repository": {"nameWithOwner": "o/r"},
+	     "timelineItems": {"nodes": [
+	       {"__typename": "IssueComment", "id": "IC_1", "createdAt": "2026-11-20T02:00:00Z", "author": {"login": "alice"}},
+	       {"__typename": "PullRequestCommit", "id": "PURC_1", "commit": {"oid": "abc123", "committedDate": "2026-11-20T02:10:00Z", "author": {"user": {"login": "me"}}}},
+	       {"__typename": "ClosedEvent", "id": "CE_1", "createdAt": "2026-11-20T02:30:00Z", "actor": {"login": "me"}}
+	     ]},
+	     "reviews": {"nodes": [
+	       {"__typename": "PullRequestReview", "id": "PRR_1", "submittedAt": "2026-11-20T02:20:00Z", "state": "APPROVED", "author": {"login": "bob"}}
+	     ]}}
+	  ]},
+	  "assigned": {"nodes": []}, "reviewRequested": {"nodes": []}, "reviewedBy": {"nodes": []}
+	}}`
+	got, err := parseResponse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, ev := range got.Items[0].Events {
+		ids = append(ids, ev.ID)
+	}
+	// コミットは PullRequestCommit の node id ではなく oid
+	if got, want := strings.Join(ids, " "), "IC_1 abc123 PRR_1 CE_1"; got != want {
+		t.Errorf("event IDs = %s, want %s", got, want)
+	}
+}
+
 func TestParseResponse_MergesRolesAndSortsByUpdatedAt(t *testing.T) {
 	got, err := parseResponse([]byte(sampleResponse))
 	if err != nil {
@@ -243,7 +273,7 @@ func TestClientSearch_UsesDataWhenGHFailsWithPartialErrors(t *testing.T) {
 	fake := func(context.Context, ...string) ([]byte, error) {
 		return []byte(partialResponse), errors.New("gh api: exit status 1")
 	}
-	got, err := NewClient(fake, false).Search(context.Background(), time.Now())
+	got, err := NewClient(fake, false).Search(context.Background(), time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +289,7 @@ func TestClientSearch_ReturnsGHErrorWithoutData(t *testing.T) {
 		"null data": `{"data": null, "errors": [{"message": "boom"}]}`,
 	} {
 		fake := func(context.Context, ...string) ([]byte, error) { return []byte(out), ghErr }
-		if _, err := NewClient(fake, false).Search(context.Background(), time.Now()); err != ghErr {
+		if _, err := NewClient(fake, false).Search(context.Background(), time.Now(), nil); err != ghErr {
 			t.Errorf("%s: err = %v, want the gh error", name, err)
 		}
 	}
@@ -320,7 +350,7 @@ func TestClientSearch_PassesQueryVariablesToGH(t *testing.T) {
 		gotArgs = args
 		return []byte(sampleResponse), nil
 	}
-	got, err := NewClient(fake, false).Search(context.Background(), time.Now())
+	got, err := NewClient(fake, false).Search(context.Background(), time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

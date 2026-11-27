@@ -21,23 +21,12 @@ type push struct {
 	At    time.Time
 }
 
-// needsPushTimes は、PR の更新がコミット以外のイベントで説明できず、
-// push の時刻を取りにいく必要があるかを返す。
-// 全 PR で取らないのは、検索結果が最大 400 件あり、ポーリングのたびの API 呼び出しが増えすぎるため。
+// needsPushTimes は、PR に push の時刻で置き換えるコミットがあり、push を取得できるかを返す。
 func needsPushTimes(item Item) bool {
 	if item.Kind != KindPullRequest || item.headRepo == "" || item.headRef == "" {
 		return false
 	}
-	hasCommit := false
-	for _, ev := range item.Events {
-		if !ev.At.Before(item.UpdatedAt) {
-			return false
-		}
-		if ev.Type == EventCommitted {
-			hasCommit = true
-		}
-	}
-	return hasCommit
+	return slices.ContainsFunc(item.Events, func(ev Event) bool { return ev.Type == EventCommitted })
 }
 
 // fetchPushes は repo の ref ブランチへの push を古い順に返す。
@@ -84,7 +73,7 @@ func applyPushTimes(item *Item, pushes []push) {
 	}
 	next := 0 // まだどの push にも割り当てていない最初のコミット
 	for _, p := range pushes {
-		head := slices.IndexFunc(commits, func(ev *Event) bool { return ev.commitOID == p.After })
+		head := slices.IndexFunc(commits, func(ev *Event) bool { return ev.ID == p.After })
 		if head < next {
 			continue
 		}

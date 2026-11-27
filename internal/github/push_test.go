@@ -72,7 +72,7 @@ func commitTimes(t *testing.T, item Item) []string {
 
 func TestClientSearch_RetimesCommitsToPushTime(t *testing.T) {
 	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: pushActivityResponse}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestClientSearch_TimesCommitsOfBranchCreationByThatPush(t *testing.T) {
 	  {"after": "c2", "timestamp": "2026-11-20T02:30:00Z", "activity_type": "branch_creation"}
 	]`
 	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: activity}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestClientSearch_SkipsPushWhoseHeadIsNotInPR(t *testing.T) {
 	  {"after": "c1", "timestamp": "2026-11-20T02:30:00Z", "activity_type": "branch_creation"}
 	]`
 	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: activity}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,10 +123,22 @@ func TestClientSearch_SkipsPushWhoseHeadIsNotInPR(t *testing.T) {
 	}
 }
 
-func TestClientSearch_SkipsPushTimesWhenUpdateIsExplained(t *testing.T) {
-	// updatedAt がコメントの時刻と同じなら、更新はコメントで説明がつく。
-	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T02:00:00Z"), activityResponse: pushActivityResponse}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+func TestClientSearch_RetimesFirstSeenPREvenWhenACommentFollowsThePush(t *testing.T) {
+	// CI のボットが push の直後にコメントし、updatedAt がコメントの時刻になった。
+	response := strings.Replace(pushedPRResponse("2026-11-20T03:00:00Z"), `"createdAt": "2026-11-20T02:00:00Z"`, `"createdAt": "2026-11-20T03:00:00Z"`, 1)
+	gh := &fakeGH{searchResponse: response, activityResponse: pushActivityResponse}
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(commitTimes(t, got.Items[0]), " "), "02:30 02:30 02:59"; got != want {
+		t.Errorf("commit times = %s, want push times %s", got, want)
+	}
+}
+
+func TestClientSearch_SkipsPushTimesForSeenPR(t *testing.T) {
+	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: pushActivityResponse}
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now(), map[string]bool{"o/r#1": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,49 +152,11 @@ func TestClientSearch_SkipsPushTimesWhenUpdateIsExplained(t *testing.T) {
 
 func TestClientSearch_KeepsCommittedDateWhenActivityFails(t *testing.T) {
 	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityErr: errors.New("HTTP 404")}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now(), nil)
 	if err != nil {
 		t.Fatalf("Search err = %v, want nil (activity failure is ignored)", err)
 	}
 	if got, want := strings.Join(commitTimes(t, got.Items[0]), " "), "01:00 01:10 01:20"; got != want {
 		t.Errorf("commit times = %s, want committedDate %s", got, want)
-	}
-}
-
-func TestClientSearch_CachesPushesUntilPRLeavesResultsOrIsUpdated(t *testing.T) {
-	gh := &fakeGH{activityResponse: pushActivityResponse}
-	client := NewClient(gh.run, false)
-	search := func(response string) Item {
-		t.Helper()
-		gh.searchResponse = response
-		got, err := client.Search(context.Background(), time.Now())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(got.Items) == 0 {
-			return Item{}
-		}
-		return got.Items[0]
-	}
-	empty := `{"data": {"viewer": {"login": "me"}, "authored": {"nodes": []}, "assigned": {"nodes": []}, "reviewRequested": {"nodes": []}, "reviewedBy": {"nodes": []}}}`
-
-	search(pushedPRResponse("2026-11-20T03:00:00Z"))
-	item := search(pushedPRResponse("2026-11-20T03:00:00Z"))
-	if len(gh.activityCalls) != 1 {
-		t.Errorf("activity calls after same update = %d, want 1 (cached)", len(gh.activityCalls))
-	}
-	if got, want := strings.Join(commitTimes(t, item), " "), "02:30 02:30 02:59"; got != want {
-		t.Errorf("commit times from cache = %s, want %s", got, want)
-	}
-
-	search(pushedPRResponse("2026-11-20T03:05:00Z"))
-	if len(gh.activityCalls) != 2 {
-		t.Errorf("activity calls after new update = %d, want 2", len(gh.activityCalls))
-	}
-
-	search(empty)
-	search(pushedPRResponse("2026-11-20T03:05:00Z"))
-	if len(gh.activityCalls) != 3 {
-		t.Errorf("activity calls after PR left the results = %d, want 3 (cache dropped)", len(gh.activityCalls))
 	}
 }

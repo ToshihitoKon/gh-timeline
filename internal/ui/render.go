@@ -182,16 +182,12 @@ type itemBlock struct {
 	Events []displayEvent
 }
 
-// batchBlocks は Batch 内のイベントを PR / issue ごとにまとめ、先頭のイベントが新しい順に並べる。
+// batchBlocks は Batch 内のイベントを PR / issue ごとにまとめる。並びは Entries の順のまま。
 func batchBlocks(b timeline.Batch) []itemBlock {
 	blocks := make([]itemBlock, 0, len(b.Entries))
 	for _, e := range b.Entries {
 		blocks = append(blocks, itemBlock{Item: e.Item, Events: entryEvents(e)})
 	}
-	// Entries は updatedAt も含めた時刻で並んでいるため、見えているイベントの時刻で並べ直す。
-	sort.SliceStable(blocks, func(i, j int) bool {
-		return blocks[i].Events[0].At.After(blocks[j].Events[0].At)
-	})
 	return blocks
 }
 

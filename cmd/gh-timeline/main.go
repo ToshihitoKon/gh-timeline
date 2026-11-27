@@ -98,7 +98,7 @@ func runDump(fetcher ui.Fetcher, tracker *timeline.Tracker, showURL bool, timeou
 
 	now := time.Now()
 	since := tracker.Since(now)
-	result, err := fetcher.Search(ctx, since)
+	result, err := fetcher.Search(ctx, since, tracker.SeenKeys())
 	if err != nil {
 		// gh が打ち切られたときのエラーは "signal: killed" だけで、時間切れだと読み取れない。
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -106,7 +106,7 @@ func runDump(fetcher ui.Fetcher, tracker *timeline.Tracker, showURL bool, timeou
 		}
 		return err
 	}
-	batch := tracker.Apply(now, since, result.Items)
+	batch := tracker.Apply(now, result.Items)
 	if len(result.PartialErrors) > 0 {
 		fmt.Fprintln(os.Stderr, "gh-timeline: some results are missing:", strings.Join(result.PartialErrors, "; "))
 	}

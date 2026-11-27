@@ -64,6 +64,7 @@ type rawItem struct {
 
 type rawEvent struct {
 	Typename    string     `json:"__typename"`
+	ID          string     `json:"id"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	SubmittedAt *time.Time `json:"submittedAt"`
 	State       string     `json:"state"`
@@ -211,19 +212,19 @@ func dropClosedByMerge(events []Event) []Event {
 func convertEvent(raw rawEvent) (Event, bool) {
 	switch raw.Typename {
 	case "IssueComment":
-		return Event{Type: EventCommented, Actor: loginOrGhost(raw.Author), At: raw.CreatedAt}, true
+		return Event{ID: raw.ID, Type: EventCommented, Actor: loginOrGhost(raw.Author), At: raw.CreatedAt}, true
 	case "PullRequestReview":
 		// 提出前（PENDING）のレビューは submittedAt が null。
 		// 他人の PENDING は API から見えず、自分の下書きを「更新」として出す意味もない。
 		if raw.SubmittedAt == nil {
 			return Event{}, false
 		}
-		return Event{Type: reviewEventType(raw), Actor: loginOrGhost(raw.Author), At: *raw.SubmittedAt}, true
+		return Event{ID: raw.ID, Type: reviewEventType(raw), Actor: loginOrGhost(raw.Author), At: *raw.SubmittedAt}, true
 	case "PullRequestCommit":
 		if raw.Commit == nil {
 			return Event{}, false
 		}
-		return Event{Type: EventCommitted, Actor: commitActor(raw), At: raw.Commit.CommittedDate, commitOID: raw.Commit.OID}, true
+		return Event{ID: raw.Commit.OID, Type: EventCommitted, Actor: commitActor(raw), At: raw.Commit.CommittedDate}, true
 	case "MergedEvent":
 		return actorEvent(EventMerged, raw), true
 	case "ClosedEvent":
@@ -279,7 +280,7 @@ func isReplyOnly(raw rawEvent) bool {
 }
 
 func actorEvent(t EventType, raw rawEvent) Event {
-	return Event{Type: t, Actor: loginOrGhost(raw.Actor), At: raw.CreatedAt}
+	return Event{ID: raw.ID, Type: t, Actor: loginOrGhost(raw.Actor), At: raw.CreatedAt}
 }
 
 // commitActor は GitHub ユーザーに紐づかないコミット（メールアドレスが未登録など）でも

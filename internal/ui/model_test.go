@@ -295,7 +295,7 @@ type fakeFetcher struct {
 	err    error
 }
 
-func (f fakeFetcher) Search(context.Context, time.Time) (github.SearchResult, error) {
+func (f fakeFetcher) Search(context.Context, time.Time, map[string]bool) (github.SearchResult, error) {
 	return f.result, f.err
 }
 
@@ -333,7 +333,7 @@ func TestModel_FetchAppendsBatchOnlyWhenUpdated(t *testing.T) {
 
 	// 同じ結果がもう一度返っても、区切り行ごと追加しない
 	m.isFetching = true
-	next, _ = m.Update(fetchedMsg{startedAt: time.Now(), since: time.Now().Add(-time.Hour), result: github.SearchResult{Viewer: "me", Items: []github.Item{item}}})
+	next, _ = m.Update(fetchedMsg{startedAt: time.Now(), result: github.SearchResult{Viewer: "me", Items: []github.Item{item}}})
 	m = next.(Model)
 	if len(m.batches) != 1 {
 		t.Errorf("batches = %d, want still 1", len(m.batches))
@@ -464,7 +464,6 @@ func applyFetch(t *testing.T, m Model, items ...github.Item) Model {
 	m.isFetching = true
 	next, _ := m.Update(fetchedMsg{
 		startedAt: time.Now(),
-		since:     time.Now().Add(-time.Hour),
 		result:    github.SearchResult{Viewer: "me", Items: items},
 	})
 	return next.(Model)
@@ -494,7 +493,6 @@ func TestModel_PartialErrorsShowInFooterWithResults(t *testing.T) {
 	m.isFetching = true
 	next, _ := m.Update(fetchedMsg{
 		startedAt: time.Now(),
-		since:     time.Now().Add(-time.Hour),
 		result: github.SearchResult{
 			Viewer:        "me",
 			Items:         []github.Item{newItem(1, 1)},
@@ -569,7 +567,6 @@ func TestModel_FetchErrorKeepsLastSuccessfulCheckTime(t *testing.T) {
 	m.isFetching = true
 	next, _ := m.Update(fetchedMsg{
 		startedAt: time.Date(2026, 11, 20, 11, 45, 0, 0, time.Local),
-		since:     time.Date(2026, 11, 20, 10, 45, 0, 0, time.Local),
 		result:    github.SearchResult{Viewer: "me"},
 	})
 	m = next.(Model)
