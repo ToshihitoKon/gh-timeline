@@ -35,6 +35,9 @@
 # リリース
 
 - main に `feat` / `fix` が取り込まれると、release-please がリリース PR を作り、以後の取り込みのたびに更新する
-- リリース PR をマージすると、release-please が `vX.Y.Z` のタグと Release を作り、同じ `release-please` ワークフローで GoReleaser がバイナリを載せる
+- リリース PR をマージすると、release-please が `vX.Y.Z` のタグと下書きの Release を作り、同じ `release-please` ワークフローで GoReleaser がバイナリを載せてから Release を公開する
+  - 下書きの間は latest にならないため、`gh extension install` / `gh extension upgrade` はバイナリのない Release を拾わない
   - タグを手で打たない
+  - GoReleaser のジョブが失敗したら、下書きを手で公開せず、そのジョブを再実行する
+  - GoReleaser は下書きを Release 名で探すため、release-please の Release 名（タグと同じ `vX.Y.Z`）と `.goreleaser.yml` の `name_template` をそろえておく
 - Release には `gh-timeline-<os>-<arch>` の名前でバイナリをそのまま載せる。`gh extension install` / `gh extension upgrade` がこの名前で探すため、アーカイブ形式や名前を変えない
