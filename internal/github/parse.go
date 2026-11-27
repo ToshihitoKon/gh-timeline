@@ -208,7 +208,20 @@ func dropClosedByMerge(events []Event) []Event {
 	})
 }
 
+// actorEventTypes は、行った人と時刻のほかに読む項目が無い GraphQL のイベント型と、その EventType。
+var actorEventTypes = map[string]EventType{
+	"MergedEvent":             EventMerged,
+	"ClosedEvent":             EventClosed,
+	"ReopenedEvent":           EventReopened,
+	"ReadyForReviewEvent":     EventReadyForReview,
+	"ConvertToDraftEvent":     EventConvertedToDraft,
+	"HeadRefForcePushedEvent": EventForcePushed,
+}
+
 func convertEvent(raw rawEvent) (Event, bool) {
+	if t, ok := actorEventTypes[raw.Typename]; ok {
+		return actorEvent(t, raw), true
+	}
 	switch raw.Typename {
 	case "IssueComment":
 		return Event{Type: EventCommented, Actor: loginOrGhost(raw.Author), At: raw.CreatedAt}, true
@@ -224,18 +237,6 @@ func convertEvent(raw rawEvent) (Event, bool) {
 			return Event{}, false
 		}
 		return Event{Type: EventCommitted, Actor: commitActor(raw), At: raw.Commit.CommittedDate, commitOID: raw.Commit.OID}, true
-	case "MergedEvent":
-		return actorEvent(EventMerged, raw), true
-	case "ClosedEvent":
-		return actorEvent(EventClosed, raw), true
-	case "ReopenedEvent":
-		return actorEvent(EventReopened, raw), true
-	case "ReadyForReviewEvent":
-		return actorEvent(EventReadyForReview, raw), true
-	case "ConvertToDraftEvent":
-		return actorEvent(EventConvertedToDraft, raw), true
-	case "HeadRefForcePushedEvent":
-		return actorEvent(EventForcePushed, raw), true
 	case "ReviewRequestedEvent":
 		ev := actorEvent(EventReviewRequested, raw)
 		if r := raw.RequestedReviewer; r != nil {
