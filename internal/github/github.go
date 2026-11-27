@@ -8,8 +8,10 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -58,9 +60,11 @@ const (
 	EventForcePushed
 	EventAssigned
 	// EventUpdated は個別のイベントを取得できなかった更新。タイトル・本文の編集など、取得対象外の操作だけで
-	// updatedAt が進んだときに表示側が作る。新しい種類はこれより前に足す。ui のテストが
-	// ここまでを数えて、すべての種類が表示の表にあるかを確かめるため。
+	// updatedAt が進んだときに timeline.Tracker が作る。誰の操作かは分からないため Actor は空にする。
 	EventUpdated
+
+	// EventTypeCount は種類の数。種類はこれより前に足す。
+	EventTypeCount
 )
 
 // Event は PR / issue のタイムライン上の 1 つの出来事。
@@ -172,22 +176,24 @@ func (c *Client) Search(ctx context.Context, since time.Time) (SearchResult, err
 	if err != nil {
 		return SearchResult{}, err
 	}
-	partialErrors = append(partialErrors, c.fetchRemainingPages(ctx, pages, queries)...)
-	result := buildResult(pages, partialErrors)
+	// map の順のまま使わないのは、条件をまたいで重複した PR / issue のどの検索結果を残すかが、ポーリングごとに変わるため
+	conns := pages.connections(slices.Sorted(maps.Keys(queries)))
+	partialErrors = append(partialErrors, c.fetchRemainingPages(ctx, conns, queries)...)
+	result := buildResult(pages.Viewer.Login, conns, partialErrors)
 	if numFailed := c.retimeCommitsByPush(ctx, result.Items); numFailed > 0 {
 		result.PartialErrors = append(result.PartialErrors, pushTimesUnavailableMessage(numFailed))
 	}
 	return result, nil
 }
 
-// fetchRemainingPages は、1 ページ目に収まらなかった検索条件の続きを maxSearchPages まで取得して pages に足し、
+// fetchRemainingPages は、1 ページ目に収まらなかった検索条件の続きを maxSearchPages まで取得して conns に足し、
 // 取得できなかったときのメッセージを返す。取得できなければその検索条件はそこで止め、取れた分だけを使う。
 //
 // ページの取得の合間に更新された PR / issue は前のページへ移り、今回は取りこぼすことがある。
 // 更新時刻が今回のポーリングの開始より後になるため、次のポーリングの検索範囲に入る。
-func (c *Client) fetchRemainingPages(ctx context.Context, pages *firstPages, queries map[string]string) []string {
+func (c *Client) fetchRemainingPages(ctx context.Context, conns []namedConnection, queries map[string]string) []string {
 	var msgs []string
-	for _, nc := range pages.connections() {
+	for _, nc := range conns {
 		conn := nc.conn
 		for numPages := 1; numPages < maxSearchPages && conn.IssueCount > len(conn.Nodes) && conn.PageInfo.HasNextPage; numPages++ {
 			out, runErr := c.run(ctx, "api", "graphql", "-f", "query="+searchQuery, "-f", "operationName=nextPage",
@@ -270,7 +276,8 @@ func pushTimesUnavailableMessage(numFailed int) string {
 	return fmt.Sprintf("push times unavailable for %d pull requests", numFailed)
 }
 
-// searchQueries は search.graphql の変数名ごとの検索クエリを返す。
+// searchQueries は search.graphql の変数名ごとの検索クエリを返す。変数名は、応答の data で
+// 検索結果に付く別名も兼ねる。検索条件を足すときは search.graphql の firstPages にも足す。
 //
 // レビュー依頼は既定で user-review-requested（自分個人への依頼）に絞る。
 // review-requested はチーム宛ての依頼も含み、CODEOWNERS でチームが自動指定される

@@ -268,10 +268,6 @@ func batchBlocks(b timeline.Batch) []itemBlock {
 }
 
 func entryEvents(e timeline.Entry) []displayEvent {
-	if len(e.Events) == 0 {
-		// タイトル・本文の編集など、取得対象外の操作だけで更新された場合。誰の操作かは分からない。
-		return []displayEvent{{Event: github.Event{Type: github.EventUpdated, Actor: "-", At: e.Item.UpdatedAt}, Count: 1}}
-	}
 	events := collapseEvents(e.Events)
 	// 並べ替えずに反転だけで新しい順になるのは、e.Events が古い順で、collapseEvents がまとめた行に
 	// 最後のイベントの時刻を使うため。同じ分のイベント（PR 作成時のレビュー依頼とアサインなど）も新しい順になる。
@@ -387,7 +383,14 @@ func collapseEvents(events []github.Event) []displayEvent {
 	return out
 }
 
+// unknownActor は、誰の操作か分からないイベント（EventUpdated）の行に出す行った人。
+// 空のまま出すと、行った人の欄が抜けた行に見えるため。
+const unknownActor = "-"
+
 func newDisplayEvent(ev github.Event) displayEvent {
+	if ev.Actor == "" {
+		ev.Actor = unknownActor
+	}
 	return displayEvent{Event: ev, Count: 1, Targets: appendTarget(nil, ev.Target)}
 }
 

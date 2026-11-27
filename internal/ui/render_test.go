@@ -11,7 +11,7 @@ import (
 )
 
 func TestEventKinds_CoverAllEventTypes(t *testing.T) {
-	for typ := github.EventCommented; typ <= github.EventUpdated; typ++ {
+	for typ := range github.EventTypeCount {
 		if k, ok := eventKinds[typ]; !ok || k.label == nil {
 			t.Errorf("eventKinds has no entry for EventType %d", typ)
 		}

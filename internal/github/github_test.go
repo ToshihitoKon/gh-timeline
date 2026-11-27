@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -413,7 +415,71 @@ func parseResponse(body []byte) (SearchResult, error) {
 	if err != nil {
 		return SearchResult{}, err
 	}
-	return buildResult(pages, msgs), nil
+	conns := pages.connections(slices.Sorted(maps.Keys(searchQueries(time.Now(), false))))
+	return buildResult(pages.Viewer.Login, conns, msgs), nil
+}
+
+// firstPagesQuery は search.graphql の firstPages のクエリ本文。
+func firstPagesQuery(t *testing.T) string {
+	t.Helper()
+	start := strings.Index(searchQuery, "query firstPages(")
+	if start < 0 {
+		t.Fatal("search.graphql has no firstPages query")
+	}
+	body, _, found := strings.Cut(searchQuery[start:], "\n}")
+	if !found {
+		t.Fatal("firstPages query is not closed")
+	}
+	return body
+}
+
+func TestSearchQuery_FirstPagesSearchesEveryQueryName(t *testing.T) {
+	query := firstPagesQuery(t)
+	aliases := regexp.MustCompile(`(?m)^\s*(\w+): search\(query: \$(\w+),`).FindAllStringSubmatch(query, -1)
+	var got []string
+	for _, m := range aliases {
+		if m[1] != m[2] {
+			t.Errorf("search alias %q takes $%s, want the variable of the same name", m[1], m[2])
+		}
+		if !strings.Contains(query, "$"+m[1]+": String!") {
+			t.Errorf("firstPages does not declare $%s", m[1])
+		}
+		got = append(got, m[1])
+	}
+	slices.Sort(got)
+	want := slices.Sorted(maps.Keys(searchQueries(time.Now(), false)))
+	if !slices.Equal(got, want) {
+		t.Errorf("firstPages searches %q, want the names of searchQueries %q", got, want)
+	}
+}
+
+func TestParseResponse_ReadsEverySearch(t *testing.T) {
+	var searches []string
+	for i, name := range slices.Sorted(maps.Keys(searchQueries(time.Now(), false))) {
+		searches = append(searches, fmt.Sprintf(`%q: {"issueCount": 1, "nodes": [%s]}`, name, issueNodes(i+1, 1)))
+	}
+	body := `{"data": {"viewer": {"login": "me"}, ` + strings.Join(searches, ", ") + `}}`
+	got, err := parseResponse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != len(searches) {
+		t.Errorf("len(Items) = %d, want %d (one from each search)", len(got.Items), len(searches))
+	}
+}
+
+func TestParseResponse_TreatsNullSearchAsEmpty(t *testing.T) {
+	body := `{"data": {"viewer": {"login": "me"},
+	  "authored": null,
+	  "assigned": {"issueCount": 1, "nodes": [` + issueNodes(1, 1) + `]}
+	}}`
+	got, err := parseResponse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Viewer != "me" || len(got.Items) != 1 {
+		t.Errorf("Viewer = %q, len(Items) = %d; want me and 1", got.Viewer, len(got.Items))
+	}
 }
 
 // issueNodes は o/r の issue を、番号 first から n 件並べた検索結果のノードを作る。

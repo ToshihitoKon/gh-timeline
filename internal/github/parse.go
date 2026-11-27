@@ -24,11 +24,24 @@ type response[T any] struct {
 
 // firstPages は search.graphql の firstPages の応答の data。
 type firstPages struct {
-	Viewer          struct{ Login string } `json:"viewer"`
-	Authored        searchConnection       `json:"authored"`
-	Assigned        searchConnection       `json:"assigned"`
-	ReviewRequested searchConnection       `json:"reviewRequested"`
-	ReviewedBy      searchConnection       `json:"reviewedBy"`
+	Viewer struct{ Login string } `json:"viewer"`
+	// searches は検索結果を、search.graphql で付けた別名（searchQueries のキー）ごとに持つ。
+	// 検索条件ごとのフィールドを並べないのは、名前を書く場所が増え、書き忘れた検索条件の結果を
+	// JSON の読み込みが黙って捨てるため。
+	searches map[string]*searchConnection
+}
+
+func (p *firstPages) UnmarshalJSON(data []byte) error {
+	// メソッドを持たない型として読み、この UnmarshalJSON を呼び返さないようにする
+	type viewerOnly firstPages
+	if err := json.Unmarshal(data, (*viewerOnly)(p)); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, &p.searches); err != nil {
+		return err
+	}
+	delete(p.searches, "viewer")
+	return nil
 }
 
 // namedConnection は検索条件の名前（search.graphql の変数名）と、その検索結果。
@@ -37,13 +50,17 @@ type namedConnection struct {
 	conn *searchConnection
 }
 
-func (p *firstPages) connections() []namedConnection {
-	return []namedConnection{
-		{"authored", &p.Authored},
-		{"assigned", &p.Assigned},
-		{"reviewRequested", &p.ReviewRequested},
-		{"reviewedBy", &p.ReviewedBy},
+// connections は names の検索結果を names の順に返す。応答に無い、または null の検索結果は空の結果にする。
+func (p *firstPages) connections(names []string) []namedConnection {
+	conns := make([]namedConnection, 0, len(names))
+	for _, name := range names {
+		conn := p.searches[name]
+		if conn == nil {
+			conn = &searchConnection{}
+		}
+		conns = append(conns, namedConnection{name, conn})
 	}
+	return conns
 }
 
 // nextPage は search.graphql の nextPage の応答の data。
@@ -147,15 +164,15 @@ func decodeResponse[T any](body []byte, runErr error) (*T, []string, error) {
 
 // buildResult は検索結果を、条件をまたいで重複を除いた SearchResult にする。
 // partialErrors は、結果の一部を取得できなかったときのメッセージ。
-func buildResult(pages *firstPages, partialErrors []string) SearchResult {
-	result := SearchResult{Viewer: pages.Viewer.Login}
+func buildResult(viewer string, conns []namedConnection, partialErrors []string) SearchResult {
+	result := SearchResult{Viewer: viewer}
 	for _, msg := range partialErrors {
 		if !slices.Contains(result.PartialErrors, msg) {
 			result.PartialErrors = append(result.PartialErrors, msg)
 		}
 	}
 	seenKeys := map[string]bool{}
-	for _, c := range pages.connections() {
+	for _, c := range conns {
 		if c.conn.IssueCount > MaxSearchHits {
 			result.Truncated = true
 		}

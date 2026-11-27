@@ -28,18 +28,14 @@ const seenRetention = time.Hour
 type Entry struct {
 	// Item は Events を空にしたもの。Entry は履歴として残り続けるため、表示しない取得済みのイベントまで持たない。
 	Item github.Item
-	// Events はまだ表示していないイベント（古い順）。
+	// Events はまだ表示していないイベント（古い順、1 件以上）。
 	// タイトル・本文の編集やラベル変更のように、取得対象外の操作だけで
-	// 更新された場合は空になる。
+	// 更新された場合は、updatedAt の時刻の EventUpdated 1 件になる。
 	Events []github.Event
 }
 
-// shownAt は Entry を並べる時刻。表示するイベントのうち最も新しいものの時刻で、
-// イベントが無ければ updatedAt。
+// shownAt は Entry を並べる時刻。表示するイベントのうち最も新しいものの時刻。
 func (e Entry) shownAt() time.Time {
-	if len(e.Events) == 0 {
-		return e.Item.UpdatedAt
-	}
 	latest := e.Events[0].At
 	for _, ev := range e.Events[1:] {
 		if ev.At.After(latest) {
@@ -142,8 +138,11 @@ func (t *Tracker) newEntry(item github.Item, since time.Time) (entry Entry, ok b
 		s.updatedAt = item.UpdatedAt
 	}
 
-	if len(events) == 0 && !isUpdated {
-		return Entry{}, false
+	if len(events) == 0 {
+		if !isUpdated {
+			return Entry{}, false
+		}
+		events = []github.Event{{Type: github.EventUpdated, At: item.UpdatedAt}}
 	}
 	item.Events = nil
 	return Entry{Item: item, Events: events}, true
