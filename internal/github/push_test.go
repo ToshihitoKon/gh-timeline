@@ -2,8 +2,8 @@ package github
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -41,28 +41,30 @@ const pushActivityResponse = `[
   {"after": "c0", "timestamp": "2026-11-20T00:00:00Z", "activity_type": "branch_creation"}
 ]`
 
-// fakeGH は検索に searchResponse を、activity API に activityResponse を返し、
-// activity API の呼び出しを記録する。activity API は PR ごとに別の goroutine から呼ばれるため、記録は mu で守る。
-type fakeGH struct {
+// fakeGitHub は検索に searchResponse を、activity API に activityResponse を返し、
+// activity API の要求を記録する。activity API は PR ごとに別の goroutine から呼ばれるため、記録は mu で守る。
+type fakeGitHub struct {
 	searchResponse   string
 	activityResponse string
-	activityErr      error
+	activityStatus   int // 0 なら 200
 
 	mu            sync.Mutex
 	activityCalls []string
 }
 
-func (f *fakeGH) run(_ context.Context, args ...string) ([]byte, error) {
-	if args[1] == "graphql" {
-		return []byte(f.searchResponse), nil
+func (f *fakeGitHub) handler() fakeAPI {
+	return fakeAPI{
+		graphQL: func(graphQLRequest) (int, string) { return http.StatusOK, f.searchResponse },
+		rest: func(requestURI string) (int, string) {
+			f.mu.Lock()
+			f.activityCalls = append(f.activityCalls, requestURI)
+			f.mu.Unlock()
+			if f.activityStatus != 0 && f.activityStatus != http.StatusOK {
+				return f.activityStatus, `{"message": "Not Found"}`
+			}
+			return http.StatusOK, f.activityResponse
+		},
 	}
-	f.mu.Lock()
-	f.activityCalls = append(f.activityCalls, args[1])
-	f.mu.Unlock()
-	if f.activityErr != nil {
-		return nil, f.activityErr
-	}
-	return []byte(f.activityResponse), nil
 }
 
 func commitTimes(t *testing.T, item Item) []string {
@@ -77,13 +79,13 @@ func commitTimes(t *testing.T, item Item) []string {
 }
 
 func TestClientSearch_RetimesCommitsToPushTime(t *testing.T) {
-	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: pushActivityResponse}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+	gh := &fakeGitHub{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: pushActivityResponse}
+	got, err := newTestClient(t, gh.handler()).Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	// fork からの PR では、push は fork 側のリポジトリに記録される。
-	want := "repos/fork/r/activity?per_page=30&ref=refs%2Fheads%2Ffeature%2Fx"
+	want := "/repos/fork/r/activity?per_page=30&ref=refs%2Fheads%2Ffeature%2Fx"
 	if len(gh.activityCalls) != 1 || gh.activityCalls[0] != want {
 		t.Errorf("activity calls = %v, want [%s]", gh.activityCalls, want)
 	}
@@ -101,8 +103,8 @@ func TestClientSearch_TimesCommitsOfBranchCreationByThatPush(t *testing.T) {
 	  {"after": "c3", "timestamp": "2026-11-20T02:59:00Z", "activity_type": "push"},
 	  {"after": "c2", "timestamp": "2026-11-20T02:30:00Z", "activity_type": "branch_creation"}
 	]`
-	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: activity}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+	gh := &fakeGitHub{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: activity}
+	got, err := newTestClient(t, gh.handler()).Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,8 +121,8 @@ func TestClientSearch_SkipsPushWhoseHeadIsNotInPR(t *testing.T) {
 	  {"after": "gone", "timestamp": "2026-11-20T02:45:00Z", "activity_type": "push"},
 	  {"after": "c1", "timestamp": "2026-11-20T02:30:00Z", "activity_type": "branch_creation"}
 	]`
-	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: activity}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+	gh := &fakeGitHub{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: activity}
+	got, err := newTestClient(t, gh.handler()).Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,8 +134,8 @@ func TestClientSearch_SkipsPushWhoseHeadIsNotInPR(t *testing.T) {
 func TestClientSearch_RetimesFirstSeenPREvenWhenACommentFollowsThePush(t *testing.T) {
 	// CI のボットが push の直後にコメントし、updatedAt がコメントの時刻になった。
 	response := strings.Replace(pushedPRResponse("2026-11-20T03:00:00Z"), `"createdAt": "2026-11-20T02:00:00Z"`, `"createdAt": "2026-11-20T03:00:00Z"`, 1)
-	gh := &fakeGH{searchResponse: response, activityResponse: pushActivityResponse}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+	gh := &fakeGitHub{searchResponse: response, activityResponse: pushActivityResponse}
+	got, err := newTestClient(t, gh.handler()).Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,8 +156,8 @@ func pushTimeUnknownCommits(item Item) []string {
 }
 
 func TestClientSearch_ReusesPushesWhileNewestCommitIsUnchanged(t *testing.T) {
-	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: pushActivityResponse}
-	client := NewClient(gh.run, false)
+	gh := &fakeGitHub{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: pushActivityResponse}
+	client := newTestClient(t, gh.handler())
 	for poll := range 2 {
 		got, err := client.Search(context.Background(), time.Now())
 		if err != nil {
@@ -171,8 +173,8 @@ func TestClientSearch_ReusesPushesWhileNewestCommitIsUnchanged(t *testing.T) {
 }
 
 func TestClientSearch_RetimesCommitPushedLaterToShownPR(t *testing.T) {
-	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: pushActivityResponse}
-	client := NewClient(gh.run, false)
+	gh := &fakeGitHub{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: pushActivityResponse}
+	client := newTestClient(t, gh.handler())
 	if _, err := client.Search(context.Background(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -195,8 +197,8 @@ func TestClientSearch_RetimesCommitPushedLaterToShownPR(t *testing.T) {
 }
 
 func TestClientSearch_ReportsAndMarksCommitsWhenActivityFails(t *testing.T) {
-	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityErr: errors.New("HTTP 404")}
-	client := NewClient(gh.run, false)
+	gh := &fakeGitHub{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityStatus: http.StatusNotFound}
+	client := newTestClient(t, gh.handler())
 	got, err := client.Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatalf("Search err = %v, want nil (activity failure does not fail the search)", err)
@@ -212,7 +214,7 @@ func TestClientSearch_ReportsAndMarksCommitsWhenActivityFails(t *testing.T) {
 	}
 
 	// 失敗した結果はキャッシュせず、次の検索で取り直す。
-	gh.activityErr, gh.activityResponse = nil, pushActivityResponse
+	gh.activityStatus, gh.activityResponse = http.StatusOK, pushActivityResponse
 	got, err = client.Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -231,8 +233,8 @@ func TestClientSearch_ReportsAndMarksCommitsWhenActivityFails(t *testing.T) {
 func TestClientSearch_RefetchesWhileNewestCommitIsMissingFromActivity(t *testing.T) {
 	// c3 の push が、まだ activity API に反映されていない。
 	activity := `[{"after": "c2", "timestamp": "2026-11-20T02:30:00Z", "activity_type": "branch_creation"}]`
-	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: activity}
-	client := NewClient(gh.run, false)
+	gh := &fakeGitHub{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: activity}
+	client := newTestClient(t, gh.handler())
 	got, err := client.Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -280,17 +282,17 @@ func prsResponse(n int) string {
 }
 
 func TestClientSearch_FetchesPushesOfEachNewPR(t *testing.T) {
-	gh := &fakeGH{searchResponse: prsResponse(3), activityResponse: pushActivityResponse}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+	gh := &fakeGitHub{searchResponse: prsResponse(3), activityResponse: pushActivityResponse}
+	got, err := newTestClient(t, gh.handler()).Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	// 呼び出しは並列に行われ、順序は決まらない。
 	slices.Sort(gh.activityCalls)
 	want := []string{
-		"repos/o/r/activity?per_page=30&ref=refs%2Fheads%2Ffeature%2F1",
-		"repos/o/r/activity?per_page=30&ref=refs%2Fheads%2Ffeature%2F2",
-		"repos/o/r/activity?per_page=30&ref=refs%2Fheads%2Ffeature%2F3",
+		"/repos/o/r/activity?per_page=30&ref=refs%2Fheads%2Ffeature%2F1",
+		"/repos/o/r/activity?per_page=30&ref=refs%2Fheads%2Ffeature%2F2",
+		"/repos/o/r/activity?per_page=30&ref=refs%2Fheads%2Ffeature%2F3",
 	}
 	if !slices.Equal(gh.activityCalls, want) {
 		t.Errorf("activity calls = %v, want %v", gh.activityCalls, want)
@@ -302,9 +304,9 @@ func TestClientSearch_FetchesPushesOfEachNewPR(t *testing.T) {
 	}
 }
 
-// blockingGH は activity API の呼び出しを release が閉じられるまで止め、同時に進行中だった呼び出しの最大数を記録する。
-// 進行中の呼び出しが pushFetchConcurrency に達したら reachedLimit を閉じる。
-type blockingGH struct {
+// blockingGitHub は activity API の要求を release が閉じられるまで止め、同時に進行中だった要求の最大数を記録する。
+// 進行中の要求が pushFetchConcurrency に達したら reachedLimit を閉じる。
+type blockingGitHub struct {
 	searchResponse string
 	release        chan struct{}
 	reachedLimit   chan struct{}
@@ -315,14 +317,18 @@ type blockingGH struct {
 	calls       int
 }
 
-func newBlockingGH(searchResponse string) *blockingGH {
-	return &blockingGH{searchResponse: searchResponse, release: make(chan struct{}), reachedLimit: make(chan struct{})}
+func newBlockingGitHub(searchResponse string) *blockingGitHub {
+	return &blockingGitHub{searchResponse: searchResponse, release: make(chan struct{}), reachedLimit: make(chan struct{})}
 }
 
-func (g *blockingGH) run(_ context.Context, args ...string) ([]byte, error) {
-	if args[1] == "graphql" {
-		return []byte(g.searchResponse), nil
+func (g *blockingGitHub) handler() fakeAPI {
+	return fakeAPI{
+		graphQL: func(graphQLRequest) (int, string) { return http.StatusOK, g.searchResponse },
+		rest:    func(string) (int, string) { return http.StatusOK, g.fetchActivity() },
 	}
+}
+
+func (g *blockingGitHub) fetchActivity() string {
 	g.mu.Lock()
 	g.calls++
 	g.inFlight++
@@ -341,19 +347,24 @@ func (g *blockingGH) run(_ context.Context, args ...string) ([]byte, error) {
 	g.mu.Lock()
 	g.inFlight--
 	g.mu.Unlock()
-	return []byte(pushActivityResponse), nil
+	return pushActivityResponse
 }
 
 func TestClientSearch_FetchesPushesInParallelUpToLimit(t *testing.T) {
 	numPRs := pushFetchConcurrency*2 + 1
-	gh := newBlockingGH(prsResponse(numPRs))
+	gh := newBlockingGitHub(prsResponse(numPRs))
+	client := newTestClient(t, gh.handler())
+	// server.Close は処理中の要求を待つため、途中で失敗したときもそれより先に要求を終わらせる。
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(gh.release) }) }
+	t.Cleanup(release)
 
 	var got SearchResult
 	var err error
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		got, err = NewClient(gh.run, false).Search(context.Background(), time.Now())
+		got, err = client.Search(context.Background(), time.Now())
 	}()
 
 	select {
@@ -361,7 +372,7 @@ func TestClientSearch_FetchesPushesInParallelUpToLimit(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("activity calls never reached %d at once, want them run in parallel", pushFetchConcurrency)
 	}
-	close(gh.release)
+	release()
 	<-done
 
 	if err != nil {

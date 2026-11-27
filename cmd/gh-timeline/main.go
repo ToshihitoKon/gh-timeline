@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"runtime/debug"
 	"time"
 
@@ -63,12 +62,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "gh-timeline:", err)
 		os.Exit(2)
 	}
-	if _, err := exec.LookPath("gh"); err != nil {
-		fmt.Fprintln(os.Stderr, "gh-timeline: gh command not found. Install GitHub CLI and run `gh auth login`.")
+	client, err := github.NewClient(*includeTeamReviews)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "gh-timeline:", err)
 		os.Exit(1)
 	}
-
-	client := github.NewClient(github.ExecGH, *includeTeamReviews)
 	tracker := timeline.NewTracker(time.Now().Add(-*lookback))
 
 	if *dump {
@@ -105,7 +103,7 @@ func runDump(stdout, stderr io.Writer, fetcher timeline.Fetcher, tracker *timeli
 	poll := tracker.StartPoll(startedAt)
 	result, err := poll.Fetch(fetcher, timeout)
 	if err != nil {
-		// 時間切れは ExecGH が "timed out" と書いて返すため、ここで包み直さない。
+		// 時間切れは github.Client が "timed out" と書いて返すため、ここで包み直さない。
 		return err
 	}
 	batch := tracker.Apply(poll, result.Items)

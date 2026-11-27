@@ -1,24 +1,36 @@
-// Package github は gh コマンド経由で GitHub の検索 API を呼び、
+// Package github は gh と同じ認証情報で GitHub の検索 API を呼び、
 // 自分が関わる PR / issue と、それぞれの直近のタイムラインイベントを取得する。
 package github
 
 import (
-	"bytes"
 	"context"
 	_ "embed"
 	"errors"
 	"fmt"
 	"maps"
-	"os"
-	"os/exec"
 	"slices"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/cli/go-gh/v2/pkg/auth"
 )
 
 //go:embed search.graphql
-var searchQuery string
+var searchFragments string
+
+//go:embed first_pages.graphql
+var firstPagesOperation string
+
+//go:embed next_page.graphql
+var nextPageOperation string
+
+// 操作ごとに別の文書にして送る。go-gh の GraphQLClient は operationName を送れず、
+// 1 つの文書に操作が 2 つあると、GitHub はどちらを実行するか決められずに失敗するため。
+var (
+	firstPagesQuery = firstPagesOperation + "\n" + searchFragments
+	nextPageQuery   = nextPageOperation + "\n" + searchFragments
+)
 
 // searchPageSize は 1 つの検索条件で 1 回に取得する件数。GraphQL のコストは件数にほぼ比例する一方、
 // 2 回目以降のポーリングの検索範囲は前回の開始から十数分ほどで、ヒットはふつう数件にとどまる。
@@ -126,64 +138,87 @@ type SearchResult struct {
 	PartialErrors []string
 }
 
-// Runner は gh コマンドを引数付きで実行し、標準出力を返す。テストで差し替える。
-// gh が非ゼロで終わったときも、得られた標準出力はエラーと一緒に返す。
-type Runner func(ctx context.Context, args ...string) ([]byte, error)
-
-// ExecGH は実際に gh コマンドを実行する Runner。
-func ExecGH(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	// CLICOLOR_FORCE や GH_FORCE_TTY が設定された環境では、gh api がパイプ先にも
-	// 色付け・整形した JSON を返し、パースに失敗する。利用者の環境変数によらず素の JSON を受け取る。
-	cmd.Env = append(os.Environ(), "CLICOLOR_FORCE=0", "NO_COLOR=1", "GH_FORCE_TTY=")
-	// CommandContext が止めるのは直接の子だけで、exec しないラッパースクリプトの gh だと、残った孫が
-	// 標準出力を開いたままにして Output が戻らない。打ち切りから数秒でパイプを閉じて戻る。
-	// 3 秒にするのは、FetchTimeout（60 秒）に足しても利用者を待たせる時間がほぼ変わらない一方、
-	// gh が正常に終わった直後に子孫が出力を書き終えるまでの猶予としては足りるため。
-	cmd.WaitDelay = 3 * time.Second
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err == nil {
-		return out, nil
-	}
-	// 打ち切られた gh の終了理由は "signal: killed" となり、タイムアウトだと分からない。
-	// 途中までの標準出力は使えないため返さない。
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return nil, fmt.Errorf("gh %s: timed out: %w", args[0], ctx.Err())
-	}
-	// gh api graphql は、応答に errors があると data があっても非ゼロで終わるが、応答は標準出力に出す。
-	// 部分的な結果を呼び出し側で使えるよう、標準出力も返す。
-	if msg := strings.TrimSpace(stderr.String()); msg != "" {
-		return out, fmt.Errorf("gh %s: %w: %s", args[0], err, msg)
-	}
-	return out, fmt.Errorf("gh %s: %w", args[0], err)
-}
-
 // Client は自分が関わる PR / issue を検索する。
 type Client struct {
-	run                Runner
+	graphQL            *api.GraphQLClient
+	rest               *api.RESTClient
 	includeTeamReviews bool // 所属チーム宛てのレビュー依頼も対象にするか
 
 	mu        sync.Mutex // pushCache を守る
 	pushCache map[branchKey]branchPushes
 }
 
-// NewClient は Client を作る。
-func NewClient(run Runner, includeTeamReviews bool) *Client {
-	return &Client{run: run, includeTeamReviews: includeTeamReviews, pushCache: map[branchKey]branchPushes{}}
+// NewClient は gh と同じホストと認証情報（GH_HOST、GH_TOKEN、gh auth login）で GitHub API を呼ぶ Client を作る。
+func NewClient(includeTeamReviews bool) (*Client, error) {
+	// ホストとトークンを go-gh の各クライアントに任せず先に決めるのは、keyring に保存された
+	// トークンを読むための gh auth token の実行を、GraphQL と REST のクライアントで 2 回行わないため。
+	host, _ := auth.DefaultHost()
+	token, _ := auth.TokenForHost(host)
+	if token == "" {
+		return nil, fmt.Errorf("no GitHub token for %s: run `gh auth login` or set GH_TOKEN", host)
+	}
+	// GH_DEBUG が設定されていると go-gh は HTTP のログを stderr に書き、TUI の画面を崩すため読まない。
+	return newClient(api.ClientOptions{Host: host, AuthToken: token, LogIgnoreEnv: true}, includeTeamReviews)
+}
+
+// newClient は opts で GitHub API のクライアントを作る。テストでは opts.Transport を差し替えて GitHub を呼ばない。
+// GraphQL と REST のクライアントは、opts.Transport が無ければ http.DefaultTransport の接続を共有する。
+func newClient(opts api.ClientOptions, includeTeamReviews bool) (*Client, error) {
+	graphQL, err := api.NewGraphQLClient(opts)
+	if err != nil {
+		return nil, err
+	}
+	rest, err := api.NewRESTClient(opts)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{graphQL: graphQL, rest: rest, includeTeamReviews: includeTeamReviews, pushCache: map[branchKey]branchPushes{}}, nil
+}
+
+// queryGraphQL は query を実行し、応答の data と、errors のメッセージ（部分的なエラー）を返す。
+func queryGraphQL[T any](ctx context.Context, client *api.GraphQLClient, query string, variables map[string]any) (*T, []string, error) {
+	var data *T // 応答の data が null なら nil のまま
+	err := client.DoWithContext(ctx, query, variables, &data)
+	var graphQLErr *api.GraphQLError
+	switch {
+	case errors.As(err, &graphQLErr):
+		// 権限の無い PR / issue は errors に載り、該当のノードは空になる。
+		// 1 件のために全体を失敗させず、data があれば残りの結果を使う。
+		if data == nil {
+			return nil, nil, err
+		}
+		// path を付けないのは、同じ理由で取れなかった複数のノードのメッセージを 1 つにまとめるため。
+		var msgs []string
+		for _, e := range graphQLErr.Errors {
+			msgs = append(msgs, e.Message)
+		}
+		return data, msgs, nil
+	case err != nil:
+		return nil, nil, describeTimeout(ctx, err)
+	case data == nil:
+		return nil, nil, errors.New("GraphQL response has no data")
+	}
+	return data, nil, nil
+}
+
+// describeTimeout は、ctx の期限切れで打ち切られた API 呼び出しのエラーを、時間切れと書いたエラーに置き換える。
+// http.Client のエラーは `Post "https://...": context deadline exceeded` となり、時間切れだと読み取りにくいため。
+func describeTimeout(ctx context.Context, err error) error {
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("GitHub API: timed out: %w", ctx.Err())
+	}
+	return err
 }
 
 // Search は since 以降に更新された、自分が関わる PR / issue を取得する。
-// gh が失敗しても、応答に data があれば部分的な結果として返す。
+// 応答に errors があっても、data があれば部分的な結果として返す。
 func (c *Client) Search(ctx context.Context, since time.Time) (SearchResult, error) {
 	queries := searchQueries(since, c.includeTeamReviews)
-	args := []string{"api", "graphql", "-f", "query=" + searchQuery, "-f", "operationName=firstPages", "-F", fmt.Sprintf("first=%d", searchPageSize)}
+	variables := map[string]any{"first": searchPageSize}
 	for name, q := range queries {
-		args = append(args, "-f", name+"="+q)
+		variables[name] = q
 	}
-	out, runErr := c.run(ctx, args...)
-	pages, partialErrors, err := decodeResponse[firstPages](out, runErr)
+	pages, partialErrors, err := queryGraphQL[firstPages](ctx, c.graphQL, firstPagesQuery, variables)
 	if err != nil {
 		return SearchResult{}, err
 	}
@@ -207,9 +242,9 @@ func (c *Client) fetchRemainingPages(ctx context.Context, conns []namedConnectio
 	for _, nc := range conns {
 		conn := nc.conn
 		for numPages := 1; numPages < maxSearchPages && conn.IssueCount > len(conn.Nodes) && conn.PageInfo.HasNextPage; numPages++ {
-			out, runErr := c.run(ctx, "api", "graphql", "-f", "query="+searchQuery, "-f", "operationName=nextPage",
-				"-F", fmt.Sprintf("first=%d", searchPageSize), "-f", "searchQuery="+queries[nc.name], "-f", "after="+conn.PageInfo.EndCursor)
-			page, pageErrors, err := decodeResponse[nextPage](out, runErr)
+			page, pageErrors, err := queryGraphQL[nextPage](ctx, c.graphQL, nextPageQuery, map[string]any{
+				"first": searchPageSize, "searchQuery": queries[nc.name], "after": conn.PageInfo.EndCursor,
+			})
 			msgs = append(msgs, pageErrors...)
 			if err != nil {
 				msgs = append(msgs, fmt.Sprintf("more %s results unavailable: %v", nc.name, err))
@@ -257,7 +292,7 @@ func (c *Client) retimeCommitsByPush(ctx context.Context, items []Item) (numFail
 		wg.Go(func() {
 			slots <- struct{}{}
 			defer func() { <-slots }()
-			pushesByItem[i], errs[i] = fetchPushes(ctx, c.run, items[i].headRepo, items[i].headRef)
+			pushesByItem[i], errs[i] = fetchPushes(ctx, c.rest, items[i].headRepo, items[i].headRef)
 		})
 	}
 	wg.Wait()
@@ -287,8 +322,8 @@ func pushTimesUnavailableMessage(numFailed int) string {
 	return fmt.Sprintf("push times unavailable for %d pull requests", numFailed)
 }
 
-// searchQueries は search.graphql の変数名ごとの検索クエリを返す。変数名は、応答の data で
-// 検索結果に付く別名も兼ねる。検索条件を足すときは search.graphql の firstPages にも足す。
+// searchQueries は first_pages.graphql の変数名ごとの検索クエリを返す。変数名は、応答の data で
+// 検索結果に付く別名も兼ねる。検索条件を足すときは first_pages.graphql にも足す。
 //
 // レビュー依頼は既定で user-review-requested（自分個人への依頼）に絞る。
 // review-requested はチーム宛ての依頼も含み、CODEOWNERS でチームが自動指定される

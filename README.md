@@ -70,7 +70,7 @@ Actions:
 
 ## Install
 
-Install the [GitHub CLI](https://cli.github.com/) and run `gh auth login` first. gh-timeline uses `gh` for authentication.
+Install the [GitHub CLI](https://cli.github.com/) and run `gh auth login` first. gh-timeline calls the GitHub API with the same account and host as `gh`: `GH_TOKEN` and `GH_HOST` if they are set, otherwise what you logged in to with `gh auth login`.
 
 Install it as a gh extension:
 

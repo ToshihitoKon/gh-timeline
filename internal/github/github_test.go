@@ -2,19 +2,136 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cli/go-gh/v2/pkg/api"
 )
+
+// graphQLRequest は GraphQL の要求の本文。
+type graphQLRequest struct {
+	Query     string         `json:"query"`
+	Variables map[string]any `json:"variables"`
+}
+
+// fakeAPI は GitHub の代わりに GraphQL と REST の要求に答える。
+// rest は GraphQL 以外の要求の、パスとクエリ文字列（/repos/o/r/activity?... など）を受け取る。
+type fakeAPI struct {
+	graphQL func(req graphQLRequest) (status int, body string)
+	rest    func(requestURI string) (status int, body string)
+}
+
+func (f fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var status int
+	var body string
+	if r.Method == http.MethodPost && r.URL.Path == "/graphql" {
+		var req graphQLRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		status, body = f.graphQL(req)
+	} else {
+		status, body = f.rest(r.URL.RequestURI())
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(body))
+}
+
+// respondGraphQL は、どの GraphQL の要求にも body を返す fakeAPI を作る。
+func respondGraphQL(body string) fakeAPI {
+	return fakeAPI{graphQL: func(graphQLRequest) (int, string) { return http.StatusOK, body }}
+}
+
+// newTestClient は、GitHub の代わりに handler へ要求を送る Client を作る。
+func newTestClient(t *testing.T, handler http.Handler) *Client {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	// api_host などを、テストを動かす人の gh の設定から読まないようにする。go-gh は設定を
+	// プロセスで最初の 1 回だけ読むため、gh の設定に触れうるテストはどれも先に空のディレクトリへ向ける。
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	client, err := newClient(api.ClientOptions{
+		Host:         "github.com",
+		AuthToken:    "test-token",
+		LogIgnoreEnv: true,
+		Transport:    toServer{server},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+// toServer は、api.github.com への要求の宛先を httptest のサーバーに書き換える。
+type toServer struct{ server *httptest.Server }
+
+func (s toServer) RoundTrip(req *http.Request) (*http.Response, error) {
+	target, err := url.Parse(s.server.URL)
+	if err != nil {
+		return nil, err
+	}
+	req = req.Clone(req.Context())
+	req.URL.Scheme, req.URL.Host = target.Scheme, target.Host
+	return s.server.Client().Transport.RoundTrip(req)
+}
+
+// isolateGHAuth は、テストを動かす人の gh の設定とログインを NewClient から見えなくする。
+// gh を PATH から外すのは、keyring のトークンを読む gh auth token を実行させないため。
+func isolateGHAuth(t *testing.T) {
+	t.Helper()
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	for _, name := range []string{"GH_HOST", "GH_PATH", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+		t.Setenv(name, "")
+	}
+}
+
+func TestNewClient_UsesGHToken(t *testing.T) {
+	isolateGHAuth(t)
+	t.Setenv("GH_TOKEN", "test-token")
+	if _, err := NewClient(false); err != nil {
+		t.Fatalf("NewClient() = %v, want nil with GH_TOKEN set", err)
+	}
+}
+
+func TestNewClient_FailsWithoutTokenForGHHost(t *testing.T) {
+	isolateGHAuth(t)
+	t.Setenv("GH_HOST", "ghe.example.com")
+	// GH_TOKEN は github.com 用で、GitHub Enterprise Server には使われない。
+	t.Setenv("GH_TOKEN", "test-token")
+	_, err := NewClient(false)
+	if err == nil || !strings.Contains(err.Error(), "ghe.example.com") || !strings.Contains(err.Error(), "gh auth login") {
+		t.Fatalf("NewClient() = %v, want an error naming ghe.example.com and gh auth login", err)
+	}
+}
+
+func TestNewClient_UsesEnterpriseTokenForGHHost(t *testing.T) {
+	isolateGHAuth(t)
+	t.Setenv("GH_HOST", "ghe.example.com")
+	t.Setenv("GH_ENTERPRISE_TOKEN", "test-token")
+	if _, err := NewClient(false); err != nil {
+		t.Fatalf("NewClient() = %v, want nil with GH_ENTERPRISE_TOKEN set", err)
+	}
+}
+
+// searchWithResponse は、検索に body を返す GitHub に対して Search を実行する。
+func searchWithResponse(t *testing.T, body string) (SearchResult, error) {
+	t.Helper()
+	return newTestClient(t, respondGraphQL(body)).Search(context.Background(), time.Now())
+}
 
 const sampleResponse = `{
   "data": {
@@ -76,7 +193,7 @@ func TestParseResponse_SetsEventIDsWithCommitOID(t *testing.T) {
 	  ]},
 	  "assigned": {"nodes": []}, "reviewRequested": {"nodes": []}, "reviewedBy": {"nodes": []}
 	}}`
-	got, err := parseResponse([]byte(body))
+	got, err := searchWithResponse(t, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +208,7 @@ func TestParseResponse_SetsEventIDsWithCommitOID(t *testing.T) {
 }
 
 func TestParseResponse_DropsDuplicatesAndSortsByUpdatedAt(t *testing.T) {
-	got, err := parseResponse([]byte(sampleResponse))
+	got, err := searchWithResponse(t, sampleResponse)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +227,7 @@ func TestParseResponse_DropsDuplicatesAndSortsByUpdatedAt(t *testing.T) {
 }
 
 func TestParseResponse_ConvertsEventsInTimeOrder(t *testing.T) {
-	got, err := parseResponse([]byte(sampleResponse))
+	got, err := searchWithResponse(t, sampleResponse)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +280,7 @@ func TestParseResponse_DropsClosedRecordedWithMerge(t *testing.T) {
     "reviewedBy": {"issueCount": 0, "nodes": []}
   }
 }`
-	got, err := parseResponse([]byte(body))
+	got, err := searchWithResponse(t, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,11 +312,13 @@ func TestParseResponse_StripsControlCharacters(t *testing.T) {
     "reviewedBy": {"issueCount": 0, "nodes": []}
   }
 }`
-	got, err := parseResponse([]byte(body))
-	if err != nil {
+	// go-gh は応答の文字列の制御文字の多くを ^[ のような表記に置き換えるため、
+	// stripControl が除くかを確かめるには、Client を通さずに応答を読む。
+	var resp struct{ Data firstPages }
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
 		t.Fatal(err)
 	}
-	item := got.Items[0]
+	item := buildResult(resp.Data.Viewer.Login, resp.Data.connections([]string{"authored"}), nil).Items[0]
 	if item.Title != "Fix]52;c;aGk= バグ" {
 		t.Errorf("Title = %q, want control characters removed and other characters kept", item.Title)
 	}
@@ -226,7 +345,7 @@ func TestParseResponse_StripsControlCharacters(t *testing.T) {
 }
 
 func TestParseResponse_ReturnsGraphQLErrors(t *testing.T) {
-	_, err := parseResponse([]byte(`{"data": null, "errors": [{"message": "boom"}]}`))
+	_, err := searchWithResponse(t, `{"data": null, "errors": [{"message": "boom"}]}`)
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("err = %v, want GraphQL error containing boom", err)
 	}
@@ -255,7 +374,7 @@ const partialResponse = `{
 }`
 
 func TestParseResponse_KeepsDataWithPartialErrors(t *testing.T) {
-	got, err := parseResponse([]byte(partialResponse))
+	got, err := searchWithResponse(t, partialResponse)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,88 +387,60 @@ func TestParseResponse_KeepsDataWithPartialErrors(t *testing.T) {
 	}
 }
 
-func TestClientSearch_UsesDataWhenGHFailsWithPartialErrors(t *testing.T) {
-	fake := func(context.Context, ...string) ([]byte, error) {
-		return []byte(partialResponse), errors.New("gh api: exit status 1")
-	}
-	got, err := NewClient(fake, false).Search(context.Background(), time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Items) != 1 || len(got.PartialErrors) != 1 {
-		t.Errorf("got %d items and partial errors %q, want 1 item and 1 partial error", len(got.Items), got.PartialErrors)
+func TestClientSearch_ReturnsHTTPError(t *testing.T) {
+	client := newTestClient(t, fakeAPI{graphQL: func(graphQLRequest) (int, string) {
+		return http.StatusUnauthorized, `{"message": "Bad credentials"}`
+	}})
+	_, err := client.Search(context.Background(), time.Now())
+	if err == nil || !strings.Contains(err.Error(), "HTTP 401: Bad credentials") {
+		t.Errorf("err = %v, want the HTTP 401 error", err)
 	}
 }
 
-func TestClientSearch_ReturnsGHErrorWithoutData(t *testing.T) {
-	ghErr := errors.New("gh api: exit status 1: HTTP 401: Bad credentials")
-	for name, out := range map[string]string{
-		"no output": "",
-		"null data": `{"data": null, "errors": [{"message": "boom"}]}`,
-	} {
-		fake := func(context.Context, ...string) ([]byte, error) { return []byte(out), ghErr }
-		if _, err := NewClient(fake, false).Search(context.Background(), time.Now()); err != ghErr {
-			t.Errorf("%s: err = %v, want the gh error", name, err)
-		}
+// stallingAPI は、応答の途中まで、または応答をまったく返さないまま、要求が打ち切られるまで待つ。
+// テストの終わりには release を閉じて、残った要求を終わらせる。
+type stallingAPI struct {
+	sendPartialBody bool
+	release         chan struct{}
+}
+
+func (s stallingAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.sendPartialBody {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data": {"viewer": {"login": "me"},`))
+		w.(http.Flusher).Flush()
+	}
+	select {
+	case <-r.Context().Done():
+	case <-s.release:
 	}
 }
 
-// installFakeGHCommand は、script を本体とする gh コマンドを PATH の先頭に置く。
-func installFakeGHCommand(t *testing.T, script string) {
-	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\n"+script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
+func TestClientSearch_ReturnsTimedOutErrorWhenResponseStalls(t *testing.T) {
+	for name, sendPartialBody := range map[string]bool{"no response": false, "partial body": true} {
+		t.Run(name, func(t *testing.T) {
+			stalling := stallingAPI{sendPartialBody: sendPartialBody, release: make(chan struct{})}
+			client := newTestClient(t, stalling)
+			// server.Close は処理中の要求を待つため、それより先に release を閉じる。
+			t.Cleanup(func() { close(stalling.release) })
 
-func TestExecGH_ReturnsStdoutWhenGHFails(t *testing.T) {
-	installFakeGHCommand(t, "echo '{\"data\":{}}'\necho 'gh: boom' >&2\nexit 1\n")
-	out, err := ExecGH(context.Background(), "api", "graphql")
-	if err == nil || !strings.Contains(err.Error(), "gh: boom") {
-		t.Errorf("err = %v, want an error with gh's stderr", err)
-	}
-	if strings.TrimSpace(string(out)) != `{"data":{}}` {
-		t.Errorf("out = %q, want gh's stdout", out)
-	}
-}
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				_, err := client.Search(ctx, time.Now())
+				done <- err
+			}()
 
-func TestExecGH_TimeoutSaysTimedOut(t *testing.T) {
-	installFakeGHCommand(t, "exec sleep 10\n")
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_, err := ExecGH(ctx, "api", "graphql")
-	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("err = %v, want a timed out error wrapping context.DeadlineExceeded", err)
-	}
-}
-
-func TestExecGH_ReturnsAfterTimeoutWhenChildKeepsStdoutOpen(t *testing.T) {
-	// sleep を exec しないため、打ち切りで sh が止まっても sleep が標準出力を開いたまま残る。
-	pidFile := filepath.Join(t.TempDir(), "sleep.pid")
-	installFakeGHCommand(t, "sleep 60 &\necho $! > '"+pidFile+"'\nwait\n")
-
-	// sh が sleep を起こす前に打ち切ると確かめたい状況にならない。sandbox 下の macOS では sh の起動に
-	// 1 秒近くかかることがあるため、100 ミリ秒ではなく 2 秒待つ。
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	start := time.Now()
-	_, err := ExecGH(ctx, "api", "graphql")
-	elapsed := time.Since(start)
-
-	pid, readErr := os.ReadFile(pidFile)
-	if readErr != nil {
-		t.Fatalf("fake gh did not start sleep before the timeout: %v", readErr)
-	}
-	t.Cleanup(func() { _ = exec.Command("kill", strings.TrimSpace(string(pid))).Run() })
-
-	// 打ち切りで戻らなければ、sleep が終わる 60 秒後まで戻らない。
-	if elapsed > 30*time.Second {
-		t.Errorf("ExecGH returned after %v, want it to return soon after the timeout", elapsed)
-	}
-	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("err = %v, want a timed out error wrapping context.DeadlineExceeded", err)
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timed out") {
+					t.Errorf("err = %v, want a timed out error wrapping context.DeadlineExceeded", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("Search did not return after its timeout")
+			}
+		})
 	}
 }
 
@@ -373,7 +464,7 @@ func TestSearchQueries_ReviewRequestScope(t *testing.T) {
 // comments は親のノード数の分だけ取得回数としてコストに数えられるため、reviews の下でだけ取る。
 func TestSearchQuery_FetchesCommentsOnlyInReviewFragment(t *testing.T) {
 	foundInReview := false
-	for _, part := range strings.Split(searchQuery, "\nfragment ") {
+	for _, part := range strings.Split("\n"+searchFragments, "\nfragment ") {
 		hasComments := strings.Contains(part, "comments(")
 		if strings.HasPrefix(part, "review on PullRequestReview") {
 			foundInReview = hasComments
@@ -391,7 +482,7 @@ func TestSearchQuery_FetchesCommentsOnlyInReviewFragment(t *testing.T) {
 // 開いている issue を PR から参照すると、GitHub は updatedAt を進めて CrossReferencedEvent だけを記録する。
 // 取らないと、その更新が "updated -" として出る。
 func TestSearchQuery_FetchesCrossReferencesOfPullRequestsAndIssues(t *testing.T) {
-	itemTypes := regexp.MustCompile(`itemTypes: \[[^\]]*\]`).FindAllString(searchQuery, -1)
+	itemTypes := regexp.MustCompile(`itemTypes: \[[^\]]*\]`).FindAllString(searchFragments, -1)
 	if len(itemTypes) != 2 {
 		t.Fatalf("found %d itemTypes lists, want 2 (pull requests and issues): %q", len(itemTypes), itemTypes)
 	}
@@ -400,58 +491,52 @@ func TestSearchQuery_FetchesCrossReferencesOfPullRequestsAndIssues(t *testing.T)
 			t.Errorf("%s does not include CROSS_REFERENCED_EVENT", list)
 		}
 	}
-	if !strings.Contains(searchQuery, "... on CrossReferencedEvent {") {
+	if !strings.Contains(searchFragments, "... on CrossReferencedEvent {") {
 		t.Error("timelineItem fragment does not read CrossReferencedEvent")
 	}
 }
 
-func TestClientSearch_PassesQueryVariablesToGH(t *testing.T) {
-	var gotArgs []string
-	fake := func(_ context.Context, args ...string) ([]byte, error) {
-		gotArgs = args
-		return []byte(sampleResponse), nil
-	}
-	got, err := NewClient(fake, false).Search(context.Background(), time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Items) != 2 {
-		t.Errorf("len(Items) = %d, want 2", len(got.Items))
-	}
-	joined := strings.Join(gotArgs, "\n")
-	for _, name := range []string{"authored=", "assigned=", "reviewRequested=", "reviewedBy=", "first=25", "operationName=firstPages"} {
-		if !strings.Contains(joined, "\n"+name) {
-			t.Errorf("gh args missing %q", name)
+// go-gh は operationName を送らないため、送る文書の操作は 1 つでなければならない。
+func TestQueries_HaveOneOperationEach(t *testing.T) {
+	for name, query := range map[string]string{"firstPages": firstPagesQuery, "nextPage": nextPageQuery} {
+		if got := strings.Count("\n"+query, "\nquery "); got != 1 {
+			t.Errorf("%s query has %d operations, want 1", name, got)
+		}
+		if !strings.HasPrefix(query, "query "+name+"(") {
+			t.Errorf("%s query starts with %.30q, want the %s operation", name, query, name)
 		}
 	}
 }
 
-// parseResponse は、続きのページを取らずに firstPages の応答だけから SearchResult を作る。
-func parseResponse(body []byte) (SearchResult, error) {
-	pages, msgs, err := decodeResponse[firstPages](body, nil)
+func TestClientSearch_PassesQueryVariables(t *testing.T) {
+	var got graphQLRequest
+	client := newTestClient(t, fakeAPI{graphQL: func(req graphQLRequest) (int, string) {
+		got = req
+		return http.StatusOK, sampleResponse
+	}})
+	since := time.Date(2026, 11, 20, 3, 0, 0, 0, time.UTC)
+	result, err := client.Search(context.Background(), since)
 	if err != nil {
-		return SearchResult{}, err
+		t.Fatal(err)
 	}
-	conns := pages.connections(slices.Sorted(maps.Keys(searchQueries(time.Now(), false))))
-	return buildResult(pages.Viewer.Login, conns, msgs), nil
-}
-
-// firstPagesQuery は search.graphql の firstPages のクエリ本文。
-func firstPagesQuery(t *testing.T) string {
-	t.Helper()
-	start := strings.Index(searchQuery, "query firstPages(")
-	if start < 0 {
-		t.Fatal("search.graphql has no firstPages query")
+	if len(result.Items) != 2 {
+		t.Errorf("len(Items) = %d, want 2", len(result.Items))
 	}
-	body, _, found := strings.Cut(searchQuery[start:], "\n}")
-	if !found {
-		t.Fatal("firstPages query is not closed")
+	if got.Query != firstPagesQuery {
+		t.Errorf("query = %.40q..., want the firstPages query", got.Query)
 	}
-	return body
+	for name, q := range searchQueries(since, false) {
+		if got.Variables[name] != q {
+			t.Errorf("variable %s = %v, want %q", name, got.Variables[name], q)
+		}
+	}
+	if got.Variables["first"] != float64(searchPageSize) {
+		t.Errorf("variable first = %v, want %d", got.Variables["first"], searchPageSize)
+	}
 }
 
 func TestSearchQuery_FirstPagesSearchesEveryQueryName(t *testing.T) {
-	query := firstPagesQuery(t)
+	query := firstPagesOperation
 	aliases := regexp.MustCompile(`(?m)^\s*(\w+): search\(query: \$(\w+),`).FindAllStringSubmatch(query, -1)
 	var got []string
 	for _, m := range aliases {
@@ -476,7 +561,7 @@ func TestParseResponse_ReadsEverySearch(t *testing.T) {
 		searches = append(searches, fmt.Sprintf(`%q: {"issueCount": 1, "nodes": [%s]}`, name, issueNodes(i+1, 1)))
 	}
 	body := `{"data": {"viewer": {"login": "me"}, ` + strings.Join(searches, ", ") + `}}`
-	got, err := parseResponse([]byte(body))
+	got, err := searchWithResponse(t, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,7 +575,7 @@ func TestParseResponse_TreatsNullSearchAsEmpty(t *testing.T) {
 	  "authored": null,
 	  "assigned": {"issueCount": 1, "nodes": [` + issueNodes(1, 1) + `]}
 	}}`
-	got, err := parseResponse([]byte(body))
+	got, err := searchWithResponse(t, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,44 +594,40 @@ func issueNodes(first, n int) string {
 	return strings.Join(nodes, ",")
 }
 
-// pagingGH は、authored だけが issueCount 件ヒットする検索に、1 ページ searchPageSize 件ずつ答える。
-// nextPage の呼び出しの引数を記録し、nextPageErr があればそれを返す。
-type pagingGH struct {
-	issueCount  int
-	nextPageErr error
+// pagingGitHub は、authored だけが issueCount 件ヒットする検索に、1 ページ searchPageSize 件ずつ答える。
+// nextPage の要求の変数を記録し、nextPageStatus が 200 以外ならそのステータスで失敗する。
+type pagingGitHub struct {
+	issueCount     int
+	nextPageStatus int // 0 なら 200
 
-	nextPageCalls [][]string
+	nextPageCalls []map[string]any
 }
 
-func (f *pagingGH) page(startNumber int) (nodes string, pageInfo string) {
+func (f *pagingGitHub) page(startNumber int) (nodes string, pageInfo string) {
 	n := min(searchPageSize, f.issueCount-startNumber+1)
 	hasNext := startNumber+n <= f.issueCount
 	return issueNodes(startNumber, n), fmt.Sprintf(`{"hasNextPage": %t, "endCursor": "cursor%d"}`, hasNext, startNumber+n)
 }
 
-func (f *pagingGH) run(_ context.Context, args ...string) ([]byte, error) {
-	if !slices.Contains(args, "operationName=nextPage") {
+func (f *pagingGitHub) graphQL(req graphQLRequest) (int, string) {
+	if req.Query != nextPageQuery {
 		nodes, pageInfo := f.page(1)
-		return fmt.Appendf(nil, `{"data": {
+		return http.StatusOK, fmt.Sprintf(`{"data": {
 		  "viewer": {"login": "me"},
 		  "authored": {"issueCount": %d, "pageInfo": %s, "nodes": [%s]},
 		  "assigned": {"issueCount": 0, "nodes": []},
 		  "reviewRequested": {"issueCount": 0, "nodes": []},
 		  "reviewedBy": {"issueCount": 0, "nodes": []}
-		}}`, f.issueCount, pageInfo, nodes), nil
+		}}`, f.issueCount, pageInfo, nodes)
 	}
-	f.nextPageCalls = append(f.nextPageCalls, args)
-	if f.nextPageErr != nil {
-		return nil, f.nextPageErr
+	f.nextPageCalls = append(f.nextPageCalls, req.Variables)
+	if f.nextPageStatus != 0 && f.nextPageStatus != http.StatusOK {
+		return f.nextPageStatus, `{"message": "Server Error"}`
 	}
-	var startNumber int
-	for _, arg := range args {
-		if after, ok := strings.CutPrefix(arg, "after=cursor"); ok {
-			startNumber, _ = strconv.Atoi(after)
-		}
-	}
+	after, _ := req.Variables["after"].(string)
+	startNumber, _ := strconv.Atoi(strings.TrimPrefix(after, "cursor"))
 	nodes, pageInfo := f.page(startNumber)
-	return fmt.Appendf(nil, `{"data": {"search": {"issueCount": %d, "pageInfo": %s, "nodes": [%s]}}}`, f.issueCount, pageInfo, nodes), nil
+	return http.StatusOK, fmt.Sprintf(`{"data": {"search": {"issueCount": %d, "pageInfo": %s, "nodes": [%s]}}}`, f.issueCount, pageInfo, nodes)
 }
 
 func TestClientSearch_FetchesNextPagesOnlyWhenHitsExceedFirstPage(t *testing.T) {
@@ -562,8 +643,8 @@ func TestClientSearch_FetchesNextPagesOnlyWhenHitsExceedFirstPage(t *testing.T) 
 		// 上限を超えた分は取らず、Truncated で知らせる
 		{issueCount: MaxSearchHits + 1, wantNextPages: maxSearchPages - 1, wantItems: MaxSearchHits, wantTruncated: true},
 	} {
-		gh := &pagingGH{issueCount: tc.issueCount}
-		got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+		gh := &pagingGitHub{issueCount: tc.issueCount}
+		got, err := newTestClient(t, fakeAPI{graphQL: gh.graphQL}).Search(context.Background(), time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -575,37 +656,37 @@ func TestClientSearch_FetchesNextPagesOnlyWhenHitsExceedFirstPage(t *testing.T) 
 }
 
 func TestClientSearch_PassesSearchQueryAndCursorToNextPage(t *testing.T) {
-	gh := &pagingGH{issueCount: searchPageSize + 1}
+	gh := &pagingGitHub{issueCount: searchPageSize + 1}
 	since := time.Date(2026, 11, 20, 3, 0, 0, 0, time.UTC)
-	if _, err := NewClient(gh.run, false).Search(context.Background(), since); err != nil {
+	if _, err := newTestClient(t, fakeAPI{graphQL: gh.graphQL}).Search(context.Background(), since); err != nil {
 		t.Fatal(err)
 	}
 	if len(gh.nextPageCalls) != 1 {
 		t.Fatalf("next page calls = %d, want 1", len(gh.nextPageCalls))
 	}
-	args := gh.nextPageCalls[0]
-	for _, want := range []string{
-		"searchQuery=" + searchQueries(since, false)["authored"],
-		fmt.Sprintf("after=cursor%d", searchPageSize+1),
-		fmt.Sprintf("first=%d", searchPageSize),
+	variables := gh.nextPageCalls[0]
+	for name, want := range map[string]any{
+		"searchQuery": searchQueries(since, false)["authored"],
+		"after":       fmt.Sprintf("cursor%d", searchPageSize+1),
+		"first":       float64(searchPageSize),
 	} {
-		if !slices.Contains(args, want) {
-			t.Errorf("next page args = %q, want %q", args, want)
+		if variables[name] != want {
+			t.Errorf("next page variable %s = %v, want %v", name, variables[name], want)
 		}
 	}
 }
 
 func TestClientSearch_KeepsFirstPageWhenNextPageFails(t *testing.T) {
-	gh := &pagingGH{issueCount: searchPageSize + 1, nextPageErr: errors.New("gh api: timed out")}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+	gh := &pagingGitHub{issueCount: searchPageSize + 1, nextPageStatus: http.StatusBadGateway}
+	got, err := newTestClient(t, fakeAPI{graphQL: gh.graphQL}).Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got.Items) != searchPageSize {
 		t.Errorf("len(Items) = %d, want %d (the first page)", len(got.Items), searchPageSize)
 	}
-	want := []string{"more authored results unavailable: gh api: timed out"}
-	if !slices.Equal(got.PartialErrors, want) {
-		t.Errorf("PartialErrors = %q, want %q", got.PartialErrors, want)
+	const wantPrefix = "more authored results unavailable: HTTP 502: Server Error"
+	if len(got.PartialErrors) != 1 || !strings.HasPrefix(got.PartialErrors[0], wantPrefix) {
+		t.Errorf("PartialErrors = %q, want one starting with %q", got.PartialErrors, wantPrefix)
 	}
 }

@@ -9,9 +9,9 @@ import (
 	"github.com/ToshihitoKon/gh-timeline/internal/github"
 )
 
-// FetchTimeout は 1 回のポーリングで gh コマンドを待つ上限。
+// FetchTimeout は 1 回のポーリングで GitHub API の応答を待つ上限。
 // 4 つの検索をまとめた GraphQL クエリは通常数秒で返るが、ネットワーク断などで
-// gh が戻らないとポーリングの自己クロックが止まってしまうため、間隔（既定 5 分）より
+// 応答が戻らないとポーリングの自己クロックが止まってしまうため、間隔（既定 5 分）より
 // 十分短い値で打ち切る。
 const FetchTimeout = 60 * time.Second
 
