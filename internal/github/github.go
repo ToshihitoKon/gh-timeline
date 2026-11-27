@@ -111,6 +111,11 @@ func ExecGH(ctx context.Context, args ...string) ([]byte, error) {
 	// CLICOLOR_FORCE や GH_FORCE_TTY が設定された環境では、gh api がパイプ先にも
 	// 色付け・整形した JSON を返し、パースに失敗する。利用者の環境変数によらず素の JSON を受け取る。
 	cmd.Env = append(os.Environ(), "CLICOLOR_FORCE=0", "NO_COLOR=1", "GH_FORCE_TTY=")
+	// CommandContext が止めるのは直接の子だけで、exec しないラッパースクリプトの gh だと、残った孫が
+	// 標準出力を開いたままにして Output が戻らない。打ち切りから数秒でパイプを閉じて戻る。
+	// 3 秒にするのは、FetchTimeout（60 秒）に足しても利用者を待たせる時間がほぼ変わらない一方、
+	// gh が正常に終わった直後に子孫が出力を書き終えるまでの猶予としては足りるため。
+	cmd.WaitDelay = 3 * time.Second
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
