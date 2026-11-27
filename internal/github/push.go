@@ -59,7 +59,10 @@ func fetchPushes(ctx context.Context, run Runner, repo, ref string) ([]push, err
 	}
 	var pushes []push
 	for _, a := range activities {
-		if a.ActivityType == "push" || a.ActivityType == "force_push" {
+		switch a.ActivityType {
+		// git push -u のようにブランチを作った push は branch_creation として記録されるが、
+		// コミットを含むため push の境界として扱う。外すと、そのコミットが次の push に数えられる。
+		case "push", "force_push", "branch_creation":
 			pushes = append(pushes, push{After: a.After, At: a.Timestamp})
 		}
 	}
