@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -87,6 +88,9 @@ func runDump(client *github.Client, tracker *timeline.Tracker, showURL bool) err
 		return err
 	}
 	batch := tracker.Apply(now, since, result.Items)
+	if len(result.PartialErrors) > 0 {
+		fmt.Fprintln(os.Stderr, "gh-timeline: some results are missing:", strings.Join(result.PartialErrors, "; "))
+	}
 	if len(batch.Entries) == 0 {
 		fmt.Printf("No updates since %s.\n", since.Format("01/02 15:04"))
 		return nil

@@ -2,6 +2,10 @@ package github
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -110,6 +114,100 @@ func TestParseResponse_ReturnsGraphQLErrors(t *testing.T) {
 	_, err := parseResponse([]byte(`{"data": null, "errors": [{"message": "boom"}]}`))
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("err = %v, want GraphQL error containing boom", err)
+	}
+}
+
+// partialResponse は、権限の無い PR が null のノードになり、そのエラーが errors に載った応答。
+const partialResponse = `{
+  "data": {
+    "viewer": {"login": "me"},
+    "authored": {"issueCount": 3, "nodes": [
+      {"__typename": "Issue", "number": 2, "title": "Bug", "url": "https://github.com/o/r/issues/2",
+       "state": "OPEN", "updatedAt": "2026-11-20T04:00:00Z",
+       "author": {"login": "me"}, "repository": {"nameWithOwner": "o/r"},
+       "timelineItems": {"nodes": []}},
+      null,
+      null
+    ]},
+    "assigned": {"issueCount": 0, "nodes": []},
+    "reviewRequested": {"issueCount": 0, "nodes": []},
+    "reviewedBy": {"issueCount": 0, "nodes": []}
+  },
+  "errors": [
+    {"message": "Resource protected by organization SAML enforcement."},
+    {"message": "Resource protected by organization SAML enforcement."}
+  ]
+}`
+
+func TestParseResponse_KeepsDataWithPartialErrors(t *testing.T) {
+	got, err := parseResponse([]byte(partialResponse))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 1 || got.Items[0].Key() != "o/r#2" {
+		t.Errorf("Items = %+v, want only o/r#2", got.Items)
+	}
+	want := []string{"Resource protected by organization SAML enforcement."}
+	if !slices.Equal(got.PartialErrors, want) {
+		t.Errorf("PartialErrors = %q, want %q (duplicates removed)", got.PartialErrors, want)
+	}
+}
+
+func TestClientSearch_UsesDataWhenGHFailsWithPartialErrors(t *testing.T) {
+	fake := func(context.Context, ...string) ([]byte, error) {
+		return []byte(partialResponse), errors.New("gh api: exit status 1")
+	}
+	got, err := NewClient(fake, false).Search(context.Background(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 1 || len(got.PartialErrors) != 1 {
+		t.Errorf("got %d items and partial errors %q, want 1 item and 1 partial error", len(got.Items), got.PartialErrors)
+	}
+}
+
+func TestClientSearch_ReturnsGHErrorWithoutData(t *testing.T) {
+	ghErr := errors.New("gh api: exit status 1: HTTP 401: Bad credentials")
+	for name, out := range map[string]string{
+		"no output": "",
+		"null data": `{"data": null, "errors": [{"message": "boom"}]}`,
+	} {
+		fake := func(context.Context, ...string) ([]byte, error) { return []byte(out), ghErr }
+		if _, err := NewClient(fake, false).Search(context.Background(), time.Now()); err != ghErr {
+			t.Errorf("%s: err = %v, want the gh error", name, err)
+		}
+	}
+}
+
+// installFakeGHCommand は、script を本体とする gh コマンドを PATH の先頭に置く。
+func installFakeGHCommand(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestExecGH_ReturnsStdoutWhenGHFails(t *testing.T) {
+	installFakeGHCommand(t, "echo '{\"data\":{}}'\necho 'gh: boom' >&2\nexit 1\n")
+	out, err := ExecGH(context.Background(), "api", "graphql")
+	if err == nil || !strings.Contains(err.Error(), "gh: boom") {
+		t.Errorf("err = %v, want an error with gh's stderr", err)
+	}
+	if strings.TrimSpace(string(out)) != `{"data":{}}` {
+		t.Errorf("out = %q, want gh's stdout", out)
+	}
+}
+
+func TestExecGH_TimeoutSaysTimedOut(t *testing.T) {
+	// exec で置き換えないと、sh を止めても sleep が標準出力を開いたまま残り、Output が戻らない。
+	installFakeGHCommand(t, "exec sleep 10\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := ExecGH(ctx, "api", "graphql")
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("err = %v, want a timed out error wrapping context.DeadlineExceeded", err)
 	}
 }
 

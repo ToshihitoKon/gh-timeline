@@ -60,6 +60,7 @@ type Model struct {
 	lastCheckedAt time.Time
 	nextPollAt    time.Time
 	lastErr       error
+	partialErrors []string
 	isTruncated   bool
 	isFetching    bool
 
@@ -174,6 +175,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			m.viewer = msg.result.Viewer
 			m.isTruncated = msg.result.Truncated
+			m.partialErrors = msg.result.PartialErrors
+			// 部分的な結果でも検索範囲を進める。SAML SSO のように毎回同じ PR / issue が取れない場合、
+			// 範囲を止めると広がり続け、やがて検索の上限件数に達するため。
 			batch := m.tracker.Apply(msg.startedAt, msg.since, msg.result.Items)
 			hasUpdates := len(batch.Entries) > 0
 			if hasUpdates {
@@ -272,11 +276,16 @@ func (m Model) footer() string {
 	switch {
 	case m.lastErr != nil:
 		// 失敗した回は tracker の検索範囲を進めないので、次の成功時にまとめて取り直される。
-		// gh の stderr は複数行になりうるが、フッタは 1 行に収める必要がある。
-		msg := strings.Join(strings.Fields(m.lastErr.Error()), " ")
-		return closedStyle.Render("error: "+msg) + "   " + keys
+		return closedStyle.Render("error: "+oneLine(m.lastErr.Error())) + "   " + keys
+	case len(m.partialErrors) > 0:
+		return draftStyle.Render("some results are missing: "+oneLine(strings.Join(m.partialErrors, "; "))) + "   " + keys
 	case m.isTruncated:
 		return draftStyle.Render("some results were truncated (over 100 hits)") + "   " + keys
 	}
 	return keys
+}
+
+// oneLine は、複数行になりうるメッセージ（gh の stderr など）をフッタの 1 行に収める。
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
