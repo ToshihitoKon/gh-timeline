@@ -15,8 +15,20 @@ func pr(number int, updatedMin int, events ...github.Event) github.Item {
 	return github.Item{Kind: github.KindPullRequest, Repo: "o/r", Number: number, UpdatedAt: at(updatedMin), Events: events}
 }
 
-func comment(actor string, min int) github.Event {
-	return github.Event{Type: github.EventCommented, Actor: actor, At: at(min)}
+func comment(id, actor string, min int) github.Event {
+	return github.Event{ID: id, Type: github.EventCommented, Actor: actor, At: at(min)}
+}
+
+func commit(oid string, committedMin int) github.Event {
+	return github.Event{ID: oid, Type: github.EventCommitted, Actor: "me", At: at(committedMin)}
+}
+
+func eventIDs(events []github.Event) []string {
+	var ids []string
+	for _, ev := range events {
+		ids = append(ids, ev.ID)
+	}
+	return ids
 }
 
 func TestTrackerSince_FirstPollUsesLookbackThenOverlap(t *testing.T) {
@@ -24,7 +36,7 @@ func TestTrackerSince_FirstPollUsesLookbackThenOverlap(t *testing.T) {
 	if got, want := tr.Since(base), base.Add(-24*time.Hour); !got.Equal(want) {
 		t.Errorf("first Since = %v, want %v", got, want)
 	}
-	tr.Apply(base, base.Add(-24*time.Hour), nil)
+	tr.Apply(base, nil)
 	if got, want := tr.Since(at(5)), base.Add(-searchLagOverlap); !got.Equal(want) {
 		t.Errorf("second Since = %v, want last start minus overlap %v", got, want)
 	}
@@ -32,48 +44,115 @@ func TestTrackerSince_FirstPollUsesLookbackThenOverlap(t *testing.T) {
 
 func TestTrackerApply_SkipsAlreadyShownUpdates(t *testing.T) {
 	tr := NewTracker(time.Hour)
-	first := tr.Apply(at(0), at(-60), []github.Item{pr(1, -10, comment("alice", -10))})
+	first := tr.Apply(at(0), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
 	if len(first.Entries) != 1 {
 		t.Fatalf("first batch entries = %d, want 1", len(first.Entries))
 	}
 
-	// 検索範囲が重なり、同じ updatedAt の PR がもう一度返ってきた
-	second := tr.Apply(at(5), at(-10), []github.Item{pr(1, -10, comment("alice", -10))})
+	// 検索範囲が重なり、同じ PR がもう一度返ってきた
+	second := tr.Apply(at(5), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
 	if len(second.Entries) != 0 {
 		t.Errorf("second batch entries = %d, want 0 (already shown)", len(second.Entries))
 	}
 }
 
-func TestTrackerApply_ShowsOnlyEventsAfterLastShown(t *testing.T) {
+func TestTrackerApply_ShowsOnlyUnshownEvents(t *testing.T) {
 	tr := NewTracker(time.Hour)
-	tr.Apply(at(0), at(-60), []github.Item{pr(1, -10, comment("alice", -10))})
+	tr.Apply(at(0), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
 
-	batch := tr.Apply(at(5), at(-10), []github.Item{pr(1, 3, comment("alice", -10), comment("bob", 3))})
+	batch := tr.Apply(at(5), []github.Item{pr(1, 3, comment("c1", "alice", -10), comment("c2", "bob", 3))})
 	if len(batch.Entries) != 1 {
 		t.Fatalf("entries = %d, want 1", len(batch.Entries))
 	}
-	events := batch.Entries[0].Events
-	if len(events) != 1 || events[0].Actor != "bob" {
-		t.Errorf("events = %+v, want only bob's new comment", events)
+	if got := eventIDs(batch.Entries[0].Events); len(got) != 1 || got[0] != "c2" {
+		t.Errorf("event IDs = %v, want only bob's new comment c2", got)
+	}
+}
+
+func TestTrackerApply_ShowsLatePushedCommitOfSeenItem(t *testing.T) {
+	tr := NewTracker(time.Hour)
+	tr.Apply(at(0), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
+
+	// 12:20 に、手元で 10:00 にコミットしたものを push し、直後に CI のボットがコメントした。
+	// コミットの時刻は前回表示した updatedAt よりも検索範囲の始点よりも古い。
+	batch := tr.Apply(at(25), []github.Item{pr(1, 21, comment("c1", "alice", -10), commit("abc", -120), comment("c2", "ci-bot", 21))})
+	if len(batch.Entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(batch.Entries))
+	}
+	if got := eventIDs(batch.Entries[0].Events); len(got) != 2 || got[0] != "abc" || got[1] != "c2" {
+		t.Errorf("event IDs = %v, want [abc c2]", got)
+	}
+}
+
+func TestTrackerApply_ShowsUpdateWithoutNewEventsAsEmpty(t *testing.T) {
+	tr := NewTracker(time.Hour)
+	tr.Apply(at(0), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
+
+	// タイトルの編集など、取得対象外の操作で updatedAt だけが進んだ
+	batch := tr.Apply(at(5), []github.Item{pr(1, 3, comment("c1", "alice", -10))})
+	if len(batch.Entries) != 1 || len(batch.Entries[0].Events) != 0 {
+		t.Errorf("entries = %+v, want one entry without events", batch.Entries)
 	}
 }
 
 func TestTrackerApply_NewItemShowsEventsWithinSearchWindow(t *testing.T) {
 	tr := NewTracker(time.Hour)
-	batch := tr.Apply(at(0), at(-60), []github.Item{pr(1, -5, comment("old", -90), comment("new", -5))})
-	events := batch.Entries[0].Events
-	if len(events) != 1 || events[0].Actor != "new" {
-		t.Errorf("events = %+v, want only the event after since", events)
+	batch := tr.Apply(at(0), []github.Item{pr(1, -5, comment("old", "alice", -90), comment("new", "bob", -5))})
+	if got := eventIDs(batch.Entries[0].Events); len(got) != 1 || got[0] != "new" {
+		t.Errorf("event IDs = %v, want only the event after since", got)
 	}
 }
 
-func TestTrackerApply_SortsEntriesNewestFirst(t *testing.T) {
+func TestTrackerApply_RemembersEventsNotShownOnFirstSight(t *testing.T) {
 	tr := NewTracker(time.Hour)
-	batch := tr.Apply(at(0), at(-60), []github.Item{
-		pr(2, -5, comment("x", -5)),
-		pr(1, -1, comment("y", -1)),
+	// 2 時間前に push されたコミットは、初めて見たときの検索範囲の外
+	tr.Apply(at(0), []github.Item{pr(1, -5, commit("abc", -120), comment("c1", "alice", -5))})
+
+	batch := tr.Apply(at(5), []github.Item{pr(1, 3, commit("abc", -120), comment("c1", "alice", -5), comment("c2", "bob", 3))})
+	if got := eventIDs(batch.Entries[0].Events); len(got) != 1 || got[0] != "c2" {
+		t.Errorf("event IDs = %v, want only c2 (abc was fetched before, outside the range)", got)
+	}
+}
+
+func TestTrackerApply_IgnoresOldEventShiftedIntoFetchedRange(t *testing.T) {
+	tr := NewTracker(time.Hour)
+	tr.Apply(at(0), []github.Item{pr(1, -5, comment("c1", "alice", -5))})
+
+	// 新しいイベントが消え、取得する直近の件数に、初めて見たときの始点より前のコメントが入ってきた
+	batch := tr.Apply(at(5), []github.Item{pr(1, 3, comment("older", "carol", -90), comment("c1", "alice", -5))})
+	if len(batch.Entries) != 1 || len(batch.Entries[0].Events) != 0 {
+		t.Errorf("entries = %+v, want one entry without events (the old comment is not new)", batch.Entries)
+	}
+}
+
+func TestTrackerApply_SortsEntriesByNewestShownEvent(t *testing.T) {
+	tr := NewTracker(time.Hour)
+	tr.Apply(at(0), []github.Item{pr(1, -30, comment("c1", "alice", -30))})
+
+	// #1 は updatedAt が新しいが、表示するイベントは #2 より古い
+	batch := tr.Apply(at(5), []github.Item{
+		pr(1, 4, comment("c1", "alice", -30), commit("abc", -20)),
+		pr(2, 2, comment("c2", "bob", 2)),
 	})
-	if batch.Entries[0].Item.Number != 1 || batch.Entries[1].Item.Number != 2 {
-		t.Errorf("order = #%d, #%d; want #1 then #2", batch.Entries[0].Item.Number, batch.Entries[1].Item.Number)
+	if len(batch.Entries) != 2 || batch.Entries[0].Item.Number != 2 || batch.Entries[1].Item.Number != 1 {
+		t.Errorf("entries = %+v, want #2 then #1", batch.Entries)
+	}
+}
+
+func TestTrackerApply_ForgetsItemsFarBeforeSearchRange(t *testing.T) {
+	tr := NewTracker(time.Hour)
+	tr.Apply(at(0), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
+
+	tr.Apply(at(60), nil)
+	// 始点は 12:50 で、updatedAt の 11:50 は始点より前だが、seenRetention の内なので残す
+	tr.Apply(at(100), nil)
+	if !tr.SeenKeys()["o/r#1"] {
+		t.Fatal("o/r#1 was forgotten within seenRetention")
+	}
+
+	// 始点は 13:30
+	tr.Apply(at(200), nil)
+	if tr.SeenKeys()["o/r#1"] {
+		t.Error("o/r#1 is still remembered after falling seenRetention behind the search range")
 	}
 }

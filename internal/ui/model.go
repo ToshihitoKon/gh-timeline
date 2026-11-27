@@ -35,14 +35,13 @@ const chromeLines = 3
 
 // Fetcher は自分が関わる PR / issue を検索する。テストで差し替える。
 type Fetcher interface {
-	Search(ctx context.Context, since time.Time) (github.SearchResult, error)
+	Search(ctx context.Context, since time.Time, seenKeys map[string]bool) (github.SearchResult, error)
 }
 
 type pollTickMsg struct{ seq int }
 
 type fetchedMsg struct {
 	startedAt time.Time
-	since     time.Time
 	result    github.SearchResult
 	err       error
 }
@@ -103,12 +102,13 @@ func (m *Model) startFetch(now time.Time) tea.Cmd {
 	if m.watchingSince.IsZero() {
 		m.watchingSince = since
 	}
+	seenKeys := m.tracker.SeenKeys()
 	fetcher := m.fetcher
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), FetchTimeout)
 		defer cancel()
-		result, err := fetcher.Search(ctx, since)
-		return fetchedMsg{startedAt: now, since: since, result: result, err: err}
+		result, err := fetcher.Search(ctx, since, seenKeys)
+		return fetchedMsg{startedAt: now, result: result, err: err}
 	}
 }
 
@@ -180,7 +180,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.partialErrors = msg.result.PartialErrors
 			// 部分的な結果でも検索範囲を進める。SAML SSO のように毎回同じ PR / issue が取れない場合、
 			// 範囲を止めると広がり続け、やがて検索の上限件数に達するため。
-			batch := m.tracker.Apply(msg.startedAt, msg.since, msg.result.Items)
+			batch := m.tracker.Apply(msg.startedAt, msg.result.Items)
 			hasUpdates := len(batch.Entries) > 0
 			if hasUpdates {
 				m.batches = append(m.batches, batch)
