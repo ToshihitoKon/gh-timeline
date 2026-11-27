@@ -59,6 +59,10 @@ const (
 	EventConvertedToDraft
 	EventForcePushed
 	EventAssigned
+	// EventUpdated は個別のイベントを取得できなかった更新。タイトル・本文の編集など、取得対象外の操作だけで
+	// updatedAt が進んだときに表示側が作る。新しい種類はこれより前に足す。ui のテストが
+	// ここまでを数えて、すべての種類が表示の表にあるかを確かめるため。
+	EventUpdated
 )
 
 // Event は PR / issue のタイムライン上の 1 つの出来事。

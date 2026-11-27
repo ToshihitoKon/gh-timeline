@@ -410,6 +410,63 @@ func TestRenderBatches_TruncatesIncludingMarker(t *testing.T) {
 	}
 }
 
+func TestBatchRenderCache_RendersOnlyNewBatches(t *testing.T) {
+	opts := RenderOptions{Viewer: "me"}
+	var c batchRenderCache
+	c.render([]timeline.Batch{batchAt(11, 45)}, 0, opts)
+
+	// 描画済みの Batch は中身を見直さないことを、中身を差し替えた Batch で確かめる
+	changed := batchAt(11, 45)
+	changed.Entries[0].Item.Title = "Changed"
+	added := batchAt(11, 50)
+	added.Entries[0].Item.Title = "Added"
+	got := ansi.Strip(c.render([]timeline.Batch{changed, added}, 0, opts))
+
+	if !strings.Contains(got, "Added") {
+		t.Errorf("new batch not rendered:\n%s", got)
+	}
+	if strings.Contains(got, "Changed") || !strings.Contains(got, "Add feature") {
+		t.Errorf("rendered batch was rendered again:\n%s", got)
+	}
+}
+
+func TestBatchRenderCache_RerendersWhenReadStateOrOptionsChange(t *testing.T) {
+	batches := []timeline.Batch{batchAt(11, 40), batchAt(11, 45), batchAt(11, 50)}
+	steps := []struct {
+		name      string
+		readCount int
+		opts      RenderOptions
+	}{
+		{"all unread", 0, RenderOptions{Viewer: "me", Width: 80}},
+		{"marked read", 3, RenderOptions{Viewer: "me", Width: 80}},
+		{"resized", 3, RenderOptions{Viewer: "me", Width: 20}},
+		{"URL shown", 3, RenderOptions{Viewer: "me", Width: 20, ShowURL: true}},
+	}
+	var c batchRenderCache
+	for _, s := range steps {
+		got := c.render(batches, s.readCount, s.opts)
+		if want := RenderBatches(batches, s.readCount, s.opts); got != want {
+			t.Errorf("%s: cached render =\n%s\nwant\n%s", s.name, got, want)
+		}
+	}
+}
+
+func TestModel_FetchWithoutUpdatesKeepsContent(t *testing.T) {
+	m := applyFetch(t, newReadyModel(fakeFetcher{}), newItem(1, 1))
+	// 描き直したかどうかを、viewport の内容が置き換わるかで確かめる
+	m.viewport.SetContent("not re-rendered")
+
+	m = applyFetch(t, m)
+	if got := m.viewport.View(); !strings.Contains(got, "not re-rendered") {
+		t.Errorf("timeline re-rendered after a fetch with no updates:\n%s", got)
+	}
+
+	m = applyFetch(t, m, newItem(2, 1))
+	if got := m.viewport.View(); strings.Contains(got, "not re-rendered") {
+		t.Errorf("timeline not re-rendered after a fetch with updates:\n%s", got)
+	}
+}
+
 func TestModel_ScrollFollowsTopOrKeepsReadingPosition(t *testing.T) {
 	m := NewModel(fakeFetcher{}, timeline.NewTracker(time.Hour), 5*time.Minute, false)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: chromeLines + 3})

@@ -20,7 +20,7 @@ var (
 	separatorStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("117"))
 	faintStyle     = lipgloss.NewStyle().Faint(true)
 	repoStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))  // 青
-	actionStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // 橙。承認・マージなどは eventStyle で別の色にする
+	actionStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // 橙。承認・マージなどは eventKinds で別の色にする
 	// シアン。桃系（213 など）は 16 色の端末でマージ済みの紫と同じマゼンタに丸められ、見分けられなくなる。
 	userStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
 	textStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
@@ -79,26 +79,68 @@ type RenderOptions struct {
 // batches は古い順で渡し、先頭から readCount 件を既読、それより新しいものを未読として
 // 各行の左端の欄に印・丸・罫線を付ける。
 func RenderBatches(batches []timeline.Batch, readCount int, opts RenderOptions) string {
-	blocks := make([]string, 0, len(batches))
-	for i := len(batches) - 1; i >= 0; i-- {
-		var prev time.Time
-		if i > 0 {
-			prev = batches[i-1].CheckedAt
-		}
-		isUnread := i >= readCount
-		var lines []string
-		for _, l := range batchLines(batches[i], prev, opts) {
-			prefix := gutter(l.kind, isUnread)
-			bodyWidth := opts.Width
-			if opts.Width > 0 {
-				// 欄より狭い端末でも本文は 1 桁残す。0 にすると truncate が「切り詰めない」と扱うため。
-				bodyWidth = max(opts.Width-ansi.StringWidth(prefix), 1)
-			}
-			lines = append(lines, prefix+truncate(l.text, bodyWidth))
-		}
-		blocks = append(blocks, strings.Join(lines, "\n"))
+	var cache batchRenderCache
+	return cache.render(batches, readCount, opts)
+}
+
+// batchRenderCache は Batch ごとの描画結果を持ち、前回から描画のしかたも既読かどうかも
+// 変わっていない Batch を描き直さずに済ませる。Batch は追記されるだけで中身が変わらない前提で、
+// batches[i] の描画結果を blocks[i] に持つ。
+//
+// 保持する Batch の数に上限を設けるほうが単純だが、さかのぼって読める履歴が消えるため採らない。
+type batchRenderCache struct {
+	opts   RenderOptions
+	blocks []renderedBlock
+}
+
+type renderedBlock struct {
+	isUnread bool
+	text     string
+}
+
+// render は RenderBatches と同じ結果を返す。
+func (c *batchRenderCache) render(batches []timeline.Batch, readCount int, opts RenderOptions) string {
+	if opts != c.opts || len(c.blocks) > len(batches) {
+		c.opts = opts
+		c.blocks = nil
 	}
-	return strings.Join(blocks, "\n\n")
+	for i := range batches {
+		isUnread := i >= readCount
+		if i < len(c.blocks) && c.blocks[i].isUnread == isUnread {
+			continue
+		}
+		block := renderedBlock{isUnread: isUnread, text: renderBatchBlock(batches, i, isUnread, opts)}
+		if i < len(c.blocks) {
+			c.blocks[i] = block
+		} else {
+			c.blocks = append(c.blocks, block)
+		}
+	}
+
+	texts := make([]string, len(c.blocks))
+	for i, b := range c.blocks {
+		texts[len(c.blocks)-1-i] = b.text
+	}
+	return strings.Join(texts, "\n\n")
+}
+
+// renderBatchBlock は batches[i] を区切り行付きで、各行の左端に欄を付けて描画する。
+func renderBatchBlock(batches []timeline.Batch, i int, isUnread bool, opts RenderOptions) string {
+	var prev time.Time
+	if i > 0 {
+		prev = batches[i-1].CheckedAt
+	}
+	var lines []string
+	for _, l := range batchLines(batches[i], prev, opts) {
+		prefix := gutter(l.kind, isUnread)
+		bodyWidth := opts.Width
+		if opts.Width > 0 {
+			// 欄より狭い端末でも本文は 1 桁残す。0 にすると truncate が「切り詰めない」と扱うため。
+			bodyWidth = max(opts.Width-ansi.StringWidth(prefix), 1)
+		}
+		lines = append(lines, prefix+truncate(l.text, bodyWidth))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // gutter は左端の欄を返す。区切り行は丸と罫線の列から書き始め、まとまりの始まりが
@@ -194,7 +236,7 @@ func batchBlocks(b timeline.Batch) []itemBlock {
 func entryEvents(e timeline.Entry) []displayEvent {
 	if len(e.Events) == 0 {
 		// タイトル・本文の編集など、取得対象外の操作だけで更新された場合。誰の操作かは分からない。
-		return []displayEvent{{Event: github.Event{Type: eventUpdated, Actor: "-", At: e.Item.UpdatedAt}, Count: 1}}
+		return []displayEvent{{Event: github.Event{Type: github.EventUpdated, Actor: "-", At: e.Item.UpdatedAt}, Count: 1}}
 	}
 	events := collapseEvents(e.Events)
 	// 同じ分に記録されたイベント（PR 作成時のレビュー依頼とアサインなど）も新しい順にそろうよう、
@@ -205,9 +247,6 @@ func entryEvents(e timeline.Entry) []displayEvent {
 	})
 	return events
 }
-
-// eventUpdated は個別のイベントを取得できなかった更新を表す、表示専用の種類。
-const eventUpdated github.EventType = -1
 
 // eventIndent はイベント行の字下げ。見出し行と見分けるため。
 const eventIndent = "  "
@@ -236,17 +275,16 @@ func renderItemHeader(blk itemBlock, viewer, linkURL string) string {
 
 // renderEventLine は "  14:01 review requested dave → you, erin" のイベント行を描画する。
 func renderEventLine(ev displayEvent, checkedAt time.Time, viewer string) string {
+	kind := eventKindOf(ev.Type)
 	parts := []string{
 		faintStyle.Render(formatEventTime(ev.At, checkedAt)),
-		eventStyle(ev.Type).Render(actionLabel(ev)),
+		kind.style.Render(kind.label(ev.Count)),
 		userStyle.Render(ev.Actor),
 	}
-	if ev.Type == github.EventReviewRequested || ev.Type == github.EventAssigned {
-		// 依頼先のアカウントが削除済みなどで取れなかった分は出さない
-		targets := slices.DeleteFunc(slices.Clone(ev.Targets), func(t string) bool { return t == "" })
-		if len(targets) > 0 {
-			parts = append(parts, faintStyle.Render("→")+" "+userStyle.Render(strings.Join(targets, ", ")))
-		}
+	// 依頼先のアカウントが削除済みなどで取れなかった分は出さない
+	targets := slices.DeleteFunc(slices.Clone(ev.Targets), func(t string) bool { return t == "" })
+	if len(targets) > 0 {
+		parts = append(parts, faintStyle.Render("→")+" "+userStyle.Render(strings.Join(targets, ", ")))
 	}
 	line := eventIndent + strings.Join(parts, " ")
 
@@ -299,11 +337,11 @@ func collapseEvents(events []github.Event) []displayEvent {
 			out = append(out, newDisplayEvent(ev))
 			continue
 		}
-		switch ev.Type {
-		case github.EventCommented, github.EventCommitted, github.EventReviewed, github.EventReplied:
+		switch eventKindOf(ev.Type).collapse {
+		case collapseByCount:
 			last.Count++
 			last.At = ev.At
-		case github.EventReviewRequested, github.EventAssigned:
+		case collapseByTargets:
 			last.Targets = append(last.Targets, ev.Target)
 			last.At = ev.At
 		default:
@@ -317,61 +355,67 @@ func newDisplayEvent(ev github.Event) displayEvent {
 	return displayEvent{Event: ev, Count: 1, Targets: []string{ev.Target}}
 }
 
-// actionLabel は行のアクション部分に出す文字列。
-func actionLabel(ev displayEvent) string {
-	switch ev.Type {
-	case github.EventCommented:
-		return withCount("commented", ev.Count)
-	case github.EventApproved:
-		return "approved"
-	case github.EventChangesRequested:
-		return "changes requested"
-	case github.EventReviewed:
-		return withCount("reviewed", ev.Count)
-	case github.EventReplied:
-		return withCount("replied", ev.Count)
-	case github.EventCommitted:
-		if ev.Count == 1 {
-			return "pushed 1 commit"
+// collapseMode は同じ人の連続した同種のイベントを 1 行にまとめるときのまとめ方。
+type collapseMode int
+
+const (
+	collapseNone      collapseMode = iota
+	collapseByCount                // 件数を数える
+	collapseByTargets              // 依頼先を並べる
+)
+
+// eventKind はイベントの種類ごとの表示のしかた。
+type eventKind struct {
+	label    func(count int) string // 行のアクション部分。count はまとめた件数
+	style    lipgloss.Style
+	collapse collapseMode
+}
+
+var eventKinds = map[github.EventType]eventKind{
+	github.EventCommented:        {label: countedLabel("commented"), style: actionStyle, collapse: collapseByCount},
+	github.EventApproved:         {label: fixedLabel("approved"), style: openStyle},
+	github.EventChangesRequested: {label: fixedLabel("changes requested"), style: closedStyle},
+	github.EventReviewed:         {label: countedLabel("reviewed"), style: actionStyle, collapse: collapseByCount},
+	github.EventReplied:          {label: countedLabel("replied"), style: actionStyle, collapse: collapseByCount},
+	github.EventCommitted:        {label: pushedLabel, style: actionStyle, collapse: collapseByCount},
+	github.EventMerged:           {label: fixedLabel("merged"), style: mergedStyle},
+	github.EventClosed:           {label: fixedLabel("closed"), style: closedStyle},
+	github.EventReopened:         {label: fixedLabel("reopened"), style: actionStyle},
+	github.EventReviewRequested:  {label: fixedLabel("review requested"), style: actionStyle, collapse: collapseByTargets},
+	github.EventReadyForReview:   {label: fixedLabel("ready for review"), style: actionStyle},
+	github.EventConvertedToDraft: {label: fixedLabel("converted to draft"), style: actionStyle},
+	github.EventForcePushed:      {label: fixedLabel("force-pushed"), style: actionStyle},
+	github.EventAssigned:         {label: fixedLabel("assigned"), style: actionStyle, collapse: collapseByTargets},
+	github.EventUpdated:          {label: fixedLabel("updated"), style: actionStyle},
+}
+
+// eventKindOf は種類の表示のしかたを返す。表に無い種類は updated として出す。
+// 表への書き忘れは TestEventKinds_CoverAllEventTypes で見つけ、実行時に TUI を落とさないよう panic しない。
+func eventKindOf(t github.EventType) eventKind {
+	if k, ok := eventKinds[t]; ok {
+		return k
+	}
+	return eventKinds[github.EventUpdated]
+}
+
+func fixedLabel(label string) func(int) string {
+	return func(int) string { return label }
+}
+
+func countedLabel(verb string) func(int) string {
+	return func(count int) string {
+		if count == 1 {
+			return verb
 		}
-		return fmt.Sprintf("pushed %d commits", ev.Count)
-	case github.EventMerged:
-		return "merged"
-	case github.EventClosed:
-		return "closed"
-	case github.EventReopened:
-		return "reopened"
-	case github.EventReviewRequested:
-		return "review requested"
-	case github.EventReadyForReview:
-		return "ready for review"
-	case github.EventConvertedToDraft:
-		return "converted to draft"
-	case github.EventForcePushed:
-		return "force-pushed"
-	case github.EventAssigned:
-		return "assigned"
+		return fmt.Sprintf("%s (%d)", verb, count)
 	}
-	return "updated"
 }
 
-func withCount(verb string, count int) string {
+func pushedLabel(count int) string {
 	if count == 1 {
-		return verb
+		return "pushed 1 commit"
 	}
-	return fmt.Sprintf("%s (%d)", verb, count)
-}
-
-func eventStyle(t github.EventType) lipgloss.Style {
-	switch t {
-	case github.EventApproved:
-		return openStyle
-	case github.EventChangesRequested, github.EventClosed:
-		return closedStyle
-	case github.EventMerged:
-		return mergedStyle
-	}
-	return actionStyle
+	return fmt.Sprintf("pushed %d commits", count)
 }
 
 // formatEventTime はイベント時刻を出す。区切り行と同じ日なら時刻だけ、
