@@ -69,6 +69,8 @@ type Model struct {
 	readBatchCount int
 	hasFetched     bool // 取得に一度でも成功したか。初回に取得した分を既読にするために使う
 
+	renderCache batchRenderCache
+
 	// pollSeq は予約中のポーリングを識別する番号。r キーで即時に取得したとき、
 	// それ以前に予約した tick を無効にしてポーリングが二重に走らないようにする。
 	pollSeq int
@@ -183,13 +185,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if hasUpdates {
 				m.batches = append(m.batches, batch)
 			}
-			if !m.hasFetched {
+			isFirstFetch := !m.hasFetched
+			if isFirstFetch {
 				m.readBatchCount = len(m.batches)
 				m.hasFetched = true
 			}
 			// 初回の取得では更新が無くても「Loading...」を「No updates since ...」に
-			// 置き換える必要があるため、更新の有無にかかわらず描き直す。
-			m.refreshContent()
+			// 置き換える必要があるため描き直す。
+			if isFirstFetch || hasUpdates {
+				m.refreshContent()
+			}
 		}
 		return m, m.scheduleNextPoll(time.Now())
 
@@ -225,14 +230,14 @@ func (m *Model) refreshContent() {
 	m.viewport.SetYOffset(prevOffset + m.viewport.TotalLineCount() - prevLines)
 }
 
-func (m Model) renderTimeline() string {
+func (m *Model) renderTimeline() string {
 	if len(m.batches) == 0 {
 		if m.watchingSince.IsZero() {
 			return faintStyle.Render("Loading...")
 		}
 		return faintStyle.Render(fmt.Sprintf("No updates since %s.", m.watchingSince.Format("01/02 15:04")))
 	}
-	return RenderBatches(m.batches, m.readBatchCount, RenderOptions{
+	return m.renderCache.render(m.batches, m.readBatchCount, RenderOptions{
 		Viewer:        m.viewer,
 		Width:         m.width,
 		ShowURL:       m.showURL,
