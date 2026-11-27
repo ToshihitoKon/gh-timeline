@@ -54,5 +54,5 @@ func TruncatedWarning(result github.SearchResult) string {
 	if !result.Truncated {
 		return ""
 	}
-	return fmt.Sprintf("some results were truncated: over %d hits", github.SearchPageSize)
+	return fmt.Sprintf("some results were truncated: over %d hits", github.MaxSearchHits)
 }

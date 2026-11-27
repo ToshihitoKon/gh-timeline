@@ -90,7 +90,7 @@ func TestTruncatedWarning(t *testing.T) {
 		t.Errorf("without truncation = %q, want empty", got)
 	}
 	got := TruncatedWarning(github.SearchResult{Truncated: true})
-	if want := fmt.Sprintf("some results were truncated: over %d hits", github.SearchPageSize); got != want {
+	if want := fmt.Sprintf("some results were truncated: over %d hits", github.MaxSearchHits); got != want {
 		t.Errorf("TruncatedWarning() = %q, want %q", got, want)
 	}
 }

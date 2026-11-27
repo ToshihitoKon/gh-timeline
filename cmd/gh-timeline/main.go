@@ -40,7 +40,8 @@ func pickVersion(embedded string, info *debug.BuildInfo) string {
 	return embedded
 }
 
-// minInterval はポーリング間隔の下限。1 回のポーリングの GraphQL のコストは 48 ポイントで、
+// minInterval はポーリング間隔の下限。1 回のポーリングの GraphQL のコストはふつう 12 ポイントだが、
+// どの検索条件も github.MaxSearchHits まで続きのページを取ると 48 ポイントになり、下限はこの場合で決めている。
 // 30 秒間隔では 1 時間に 5,760 ポイントとなり、上限の 5,000 ポイントを超えて同じトークンを使う
 // 他の gh コマンドまで止まる。1 分間隔なら 2,880 ポイントで、他の gh コマンドの分が残る。
 const minInterval = time.Minute

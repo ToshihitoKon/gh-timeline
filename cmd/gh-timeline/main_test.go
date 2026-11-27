@@ -134,7 +134,7 @@ func TestRunDump_PrintsUpdatesAndWarnings(t *testing.T) {
 		"  13:50 commented alice\n" +
 		"owner/repo PR#2 Add tests\n" +
 		"  13:40 commented me\n" +
-		fmt.Sprintf("(some results were truncated: over %d hits)\n", github.SearchPageSize)
+		fmt.Sprintf("(some results were truncated: over %d hits)\n", github.MaxSearchHits)
 	if stdout != wantStdout {
 		t.Errorf("stdout =\n%s\nwant\n%s", stdout, wantStdout)
 	}
@@ -151,7 +151,7 @@ func TestRunDump_ReportsTruncationWithNoUpdates(t *testing.T) {
 	}
 
 	wantStdout := "No updates since 11/20 13:30.\n" +
-		fmt.Sprintf("(some results were truncated: over %d hits)\n", github.SearchPageSize)
+		fmt.Sprintf("(some results were truncated: over %d hits)\n", github.MaxSearchHits)
 	if stdout != wantStdout {
 		t.Errorf("stdout =\n%s\nwant\n%s", stdout, wantStdout)
 	}

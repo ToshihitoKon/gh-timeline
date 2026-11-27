@@ -614,7 +614,7 @@ func TestModel_TruncatedWarningShowsInFooter(t *testing.T) {
 		result: github.SearchResult{Viewer: "me", Truncated: true},
 	})
 	m = next.(Model)
-	want := fmt.Sprintf("some results were truncated: over %d hits", github.SearchPageSize)
+	want := fmt.Sprintf("some results were truncated: over %d hits", github.MaxSearchHits)
 	if footer := ansi.Strip(m.footer()); !strings.HasPrefix(footer, want) {
 		t.Errorf("footer = %q, want it to start with %q", footer, want)
 	}

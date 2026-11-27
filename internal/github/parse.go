@@ -14,23 +14,50 @@ import (
 // ghostLogin は削除済みアカウントの表示名。GitHub の Web 表示に合わせている。
 const ghostLogin = "ghost"
 
-type response struct {
+type response[T any] struct {
 	// Data は、エラーで結果を何も返せないときに null になる。
-	Data *struct {
-		Viewer          struct{ Login string } `json:"viewer"`
-		Authored        searchConnection       `json:"authored"`
-		Assigned        searchConnection       `json:"assigned"`
-		ReviewRequested searchConnection       `json:"reviewRequested"`
-		ReviewedBy      searchConnection       `json:"reviewedBy"`
-	} `json:"data"`
+	Data   *T `json:"data"`
 	Errors []struct {
 		Message string `json:"message"`
 	} `json:"errors"`
 }
 
+// firstPages は search.graphql の firstPages の応答の data。
+type firstPages struct {
+	Viewer          struct{ Login string } `json:"viewer"`
+	Authored        searchConnection       `json:"authored"`
+	Assigned        searchConnection       `json:"assigned"`
+	ReviewRequested searchConnection       `json:"reviewRequested"`
+	ReviewedBy      searchConnection       `json:"reviewedBy"`
+}
+
+// namedConnection は検索条件の名前（search.graphql の変数名）と、その検索結果。
+type namedConnection struct {
+	name string
+	conn *searchConnection
+}
+
+func (p *firstPages) connections() []namedConnection {
+	return []namedConnection{
+		{"authored", &p.Authored},
+		{"assigned", &p.Assigned},
+		{"reviewRequested", &p.ReviewRequested},
+		{"reviewedBy", &p.ReviewedBy},
+	}
+}
+
+// nextPage は search.graphql の nextPage の応答の data。
+type nextPage struct {
+	Search searchConnection `json:"search"`
+}
+
 type searchConnection struct {
-	IssueCount int       `json:"issueCount"`
-	Nodes      []rawItem `json:"nodes"`
+	IssueCount int `json:"issueCount"`
+	PageInfo   struct {
+		HasNextPage bool   `json:"hasNextPage"`
+		EndCursor   string `json:"endCursor"`
+	} `json:"pageInfo"`
+	Nodes []rawItem `json:"nodes"`
 }
 
 type rawActor struct {
@@ -93,30 +120,46 @@ type rawReviewComment struct {
 	ReplyTo *struct{} `json:"replyTo"`
 }
 
-func parseResponse(body []byte) (SearchResult, error) {
-	var resp response
+// decodeResponse は gh api graphql の応答から data と errors のメッセージを取り出す。
+// runErr は gh の実行時のエラーで、応答を読めなかったときは、その理由をよく表している gh の stderr を含む runErr を返す。
+func decodeResponse[T any](body []byte, runErr error) (*T, []string, error) {
+	var resp response[T]
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return SearchResult{}, fmt.Errorf("parse GraphQL response: %w", err)
+		if runErr != nil {
+			return nil, nil, runErr
+		}
+		return nil, nil, fmt.Errorf("parse GraphQL response: %w", err)
 	}
 	// 権限の無い PR / issue は errors に載り、該当のノードは空になる。
 	// 1 件のために全体を失敗させず、data があれば残りの結果を使う。
 	var msgs []string
 	for _, e := range resp.Errors {
-		if !slices.Contains(msgs, e.Message) {
-			msgs = append(msgs, e.Message)
-		}
+		msgs = append(msgs, e.Message)
 	}
 	if resp.Data == nil {
-		return SearchResult{}, errors.New("GraphQL error: " + strings.Join(msgs, "; "))
+		if runErr != nil {
+			return nil, nil, runErr
+		}
+		return nil, nil, errors.New("GraphQL error: " + strings.Join(msgs, "; "))
 	}
+	return resp.Data, msgs, nil
+}
 
-	result := SearchResult{Viewer: resp.Data.Viewer.Login, PartialErrors: msgs}
+// buildResult は検索結果を、条件をまたいで重複を除いた SearchResult にする。
+// partialErrors は、結果の一部を取得できなかったときのメッセージ。
+func buildResult(pages *firstPages, partialErrors []string) SearchResult {
+	result := SearchResult{Viewer: pages.Viewer.Login}
+	for _, msg := range partialErrors {
+		if !slices.Contains(result.PartialErrors, msg) {
+			result.PartialErrors = append(result.PartialErrors, msg)
+		}
+	}
 	seenKeys := map[string]bool{}
-	for _, conn := range []searchConnection{resp.Data.Authored, resp.Data.Assigned, resp.Data.ReviewRequested, resp.Data.ReviewedBy} {
-		if conn.IssueCount > len(conn.Nodes) {
+	for _, c := range pages.connections() {
+		if c.conn.IssueCount > MaxSearchHits {
 			result.Truncated = true
 		}
-		for _, raw := range conn.Nodes {
+		for _, raw := range c.conn.Nodes {
 			item, ok := convertItem(raw)
 			if !ok {
 				continue
@@ -130,7 +173,7 @@ func parseResponse(body []byte) (SearchResult, error) {
 		}
 	}
 	slices.SortStableFunc(result.Items, func(a, b Item) int { return b.UpdatedAt.Compare(a.UpdatedAt) })
-	return result, nil
+	return result
 }
 
 // convertItem は検索結果の 1 件を Item にする。PR / issue 以外

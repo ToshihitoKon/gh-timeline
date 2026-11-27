@@ -1,4 +1,4 @@
-query($authored: String!, $assigned: String!, $reviewRequested: String!, $reviewedBy: String!, $first: Int!) {
+query firstPages($authored: String!, $assigned: String!, $reviewRequested: String!, $reviewedBy: String!, $first: Int!) {
   viewer { login }
   authored: search(query: $authored, type: ISSUE, first: $first) { ...results }
   assigned: search(query: $assigned, type: ISSUE, first: $first) { ...results }
@@ -6,8 +6,14 @@ query($authored: String!, $assigned: String!, $reviewRequested: String!, $review
   reviewedBy: search(query: $reviewedBy, type: ISSUE, first: $first) { ...results }
 }
 
+# 変数名を query にしないのは、gh api graphql が query をクエリ本文のフィールドとして扱い、変数として渡せないため。
+query nextPage($searchQuery: String!, $first: Int!, $after: String!) {
+  search(query: $searchQuery, type: ISSUE, first: $first, after: $after) { ...results }
+}
+
 fragment results on SearchResultItemConnection {
   issueCount
+  pageInfo { hasNextPage endCursor }
   nodes {
     __typename
     ... on PullRequest {
@@ -30,7 +36,7 @@ fragment results on SearchResultItemConnection {
       # latestReviews で補わないのは、reviews が提出した順に並び、下書きのまま長く置いてから
       # 提出したレビューも末尾に来るため。latestReviews は人ごとに最新の 1 件しか返さない。
       # last: 10 で止めているのは、件数がそのまま各レビューの comments を取る回数としてコストに数えられ、
-      # 1 件増やすと 1 回のポーリングで 4 ポイント増えるため。
+      # 1 件増やすと firstPages で 1 ポイント増えるため。
       reviews(last: 10) {
         nodes { ...review }
       }
@@ -68,7 +74,7 @@ fragment timelineItem on Node {
 
 # レビューを timelineItem と別のフラグメントにしているのは、timelineItem に comments を置くと
 # timelineItems の下でも各ノードの comments を取る回数としてコストに数えられるため。
-# itemTypes にレビューを含めていなくても数えられ、1 回のポーリングで 40 ポイント多くかかる。
+# itemTypes にレビューを含めていなくても数えられ、firstPages で 10 ポイント多くかかる。
 # comments を 10 件までにしているのは、返信だけのレビューはふつう 1 件で、
 # 返信かどうかの判定に全件は要らないため。10 件を超えるレビューは返信として扱わない。
 fragment review on PullRequestReview {
@@ -76,6 +82,8 @@ fragment review on PullRequestReview {
   id
   submittedAt
   state
+  # 本文は空かどうかしか使わないが全文を取る。PullRequestReview には本文の有無だけを返すフィールドが無く、
+  # bodyText なども全文を返すため。本文はコストには数えられず、応答が大きくなるだけ。
   body
   author { login }
   comments(first: 10) { totalCount nodes { replyTo { id } } }
