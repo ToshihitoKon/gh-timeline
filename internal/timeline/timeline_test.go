@@ -31,19 +31,61 @@ func eventIDs(events []github.Event) []string {
 	return ids
 }
 
-func TestTrackerSince_FirstPollUsesLookbackThenOverlap(t *testing.T) {
-	tr := NewTracker(24 * time.Hour)
-	if got, want := tr.Since(base), base.Add(-24*time.Hour); !got.Equal(want) {
+func TestTrackerSince_FirstPollUsesFirstSinceThenOverlap(t *testing.T) {
+	tr := NewTracker(base.Add(-24 * time.Hour))
+	if got, want := tr.Since(), base.Add(-24*time.Hour); !got.Equal(want) {
 		t.Errorf("first Since = %v, want %v", got, want)
 	}
 	tr.Apply(base, nil)
-	if got, want := tr.Since(at(5)), base.Add(-searchLagOverlap); !got.Equal(want) {
+	if got, want := tr.Since(), base.Add(-searchLagOverlap); !got.Equal(want) {
 		t.Errorf("second Since = %v, want last start minus overlap %v", got, want)
 	}
 }
 
+func TestTrackerSince_StaysAtFirstSinceUntilPollSucceeds(t *testing.T) {
+	tr := NewTracker(at(-30))
+	// 初回のポーリングが失敗すると Apply は呼ばれない。何度取り直しても始点は動かない
+	for range 3 {
+		if got := tr.Since(); !got.Equal(at(-30)) {
+			t.Fatalf("Since before the first success = %v, want %v", got, at(-30))
+		}
+	}
+}
+
+func TestTrackerSince_NeverBeforeFirstSince(t *testing.T) {
+	// -since 5m のように searchLagOverlap より短い幅で始めた
+	tr := NewTracker(at(-5))
+	tr.Apply(at(0), nil)
+	if got := tr.Since(); !got.Equal(at(-5)) {
+		t.Errorf("second Since = %v, want the first since %v (not %v)", got, at(-5), base.Add(-searchLagOverlap))
+	}
+}
+
+func TestTrackerSince_TruncatedToSeconds(t *testing.T) {
+	tr := NewTracker(base.Add(1500 * time.Millisecond))
+	if got, want := tr.Since(), base.Add(time.Second); !got.Equal(want) {
+		t.Errorf("first Since = %v, want %v", got, want)
+	}
+	tr.Apply(at(20).Add(300*time.Millisecond), nil)
+	if got, want := tr.Since(), at(10); !got.Equal(want) {
+		t.Errorf("second Since = %v, want %v", got, want)
+	}
+}
+
+func TestTrackerApply_NewItemShowsEventInSameSecondAsSince(t *testing.T) {
+	// 検索には秒に切り詰めた始点 12:00:00 が渡り、12:00:00 にコメントされた PR が返ってくる
+	tr := NewTracker(base.Add(500 * time.Millisecond))
+	batch := tr.Apply(at(5), []github.Item{pr(1, 0, comment("c1", "alice", 0))})
+	if len(batch.Entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(batch.Entries))
+	}
+	if got := eventIDs(batch.Entries[0].Events); len(got) != 1 || got[0] != "c1" {
+		t.Errorf("event IDs = %v, want [c1] (not an update without events)", got)
+	}
+}
+
 func TestTrackerApply_SkipsAlreadyShownUpdates(t *testing.T) {
-	tr := NewTracker(time.Hour)
+	tr := NewTracker(at(-60))
 	first := tr.Apply(at(0), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
 	if len(first.Entries) != 1 {
 		t.Fatalf("first batch entries = %d, want 1", len(first.Entries))
@@ -57,7 +99,7 @@ func TestTrackerApply_SkipsAlreadyShownUpdates(t *testing.T) {
 }
 
 func TestTrackerApply_ShowsOnlyUnshownEvents(t *testing.T) {
-	tr := NewTracker(time.Hour)
+	tr := NewTracker(at(-60))
 	tr.Apply(at(0), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
 
 	batch := tr.Apply(at(5), []github.Item{pr(1, 3, comment("c1", "alice", -10), comment("c2", "bob", 3))})
@@ -70,7 +112,7 @@ func TestTrackerApply_ShowsOnlyUnshownEvents(t *testing.T) {
 }
 
 func TestTrackerApply_ShowsLatePushedCommitOfSeenItem(t *testing.T) {
-	tr := NewTracker(time.Hour)
+	tr := NewTracker(at(-60))
 	tr.Apply(at(0), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
 
 	// 12:20 に、手元で 10:00 にコミットしたものを push し、直後に CI のボットがコメントした。
@@ -85,7 +127,7 @@ func TestTrackerApply_ShowsLatePushedCommitOfSeenItem(t *testing.T) {
 }
 
 func TestTrackerApply_ShowsUpdateWithoutNewEventsAsEmpty(t *testing.T) {
-	tr := NewTracker(time.Hour)
+	tr := NewTracker(at(-60))
 	tr.Apply(at(0), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
 
 	// タイトルの編集など、取得対象外の操作で updatedAt だけが進んだ
@@ -96,7 +138,7 @@ func TestTrackerApply_ShowsUpdateWithoutNewEventsAsEmpty(t *testing.T) {
 }
 
 func TestTrackerApply_NewItemShowsEventsWithinSearchWindow(t *testing.T) {
-	tr := NewTracker(time.Hour)
+	tr := NewTracker(at(-60))
 	batch := tr.Apply(at(0), []github.Item{pr(1, -5, comment("old", "alice", -90), comment("new", "bob", -5))})
 	if got := eventIDs(batch.Entries[0].Events); len(got) != 1 || got[0] != "new" {
 		t.Errorf("event IDs = %v, want only the event after since", got)
@@ -104,7 +146,7 @@ func TestTrackerApply_NewItemShowsEventsWithinSearchWindow(t *testing.T) {
 }
 
 func TestTrackerApply_RemembersEventsNotShownOnFirstSight(t *testing.T) {
-	tr := NewTracker(time.Hour)
+	tr := NewTracker(at(-60))
 	// 2 時間前に push されたコミットは、初めて見たときの検索範囲の外
 	tr.Apply(at(0), []github.Item{pr(1, -5, commit("abc", -120), comment("c1", "alice", -5))})
 
@@ -115,7 +157,7 @@ func TestTrackerApply_RemembersEventsNotShownOnFirstSight(t *testing.T) {
 }
 
 func TestTrackerApply_IgnoresOldEventShiftedIntoFetchedRange(t *testing.T) {
-	tr := NewTracker(time.Hour)
+	tr := NewTracker(at(-60))
 	tr.Apply(at(0), []github.Item{pr(1, -5, comment("c1", "alice", -5))})
 
 	// 新しいイベントが消え、取得する直近の件数に、初めて見たときの始点より前のコメントが入ってきた
@@ -126,7 +168,7 @@ func TestTrackerApply_IgnoresOldEventShiftedIntoFetchedRange(t *testing.T) {
 }
 
 func TestTrackerApply_SortsEntriesByNewestShownEvent(t *testing.T) {
-	tr := NewTracker(time.Hour)
+	tr := NewTracker(at(-60))
 	tr.Apply(at(0), []github.Item{pr(1, -30, comment("c1", "alice", -30))})
 
 	// #1 は updatedAt が新しいが、表示するイベントは #2 より古い
@@ -140,7 +182,7 @@ func TestTrackerApply_SortsEntriesByNewestShownEvent(t *testing.T) {
 }
 
 func TestTrackerApply_ForgetsItemsFarBeforeSearchRange(t *testing.T) {
-	tr := NewTracker(time.Hour)
+	tr := NewTracker(at(-60))
 	tr.Apply(at(0), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
 
 	tr.Apply(at(60), nil)

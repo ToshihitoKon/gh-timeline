@@ -48,7 +48,7 @@ func (hangingFetcher) Search(ctx context.Context, _ time.Time, _ map[string]bool
 func TestRunDump_GivesUpAfterTimeout(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
-		done <- runDump(hangingFetcher{}, timeline.NewTracker(30*time.Minute), false, 10*time.Millisecond)
+		done <- runDump(hangingFetcher{}, timeline.NewTracker(time.Now().Add(-30*time.Minute)), false, 10*time.Millisecond)
 	}()
 
 	select {
