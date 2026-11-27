@@ -63,6 +63,8 @@ Actions:
 - `merged`, `closed`, `reopened`
 - `review requested`, `assigned`
 - `ready for review`, `converted to draft`
+- `referenced in PR#12`: another pull request or issue mentions this one, such as with `Closes #34`
+  - A pull request or issue in another repository is shown with its repository, as in `referenced in owner/repo PR#12`.
 - `updated`: other changes such as title, body, or label edits
   - The person is shown as `-`, since gh-timeline does not know who made the change.
 

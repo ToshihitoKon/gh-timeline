@@ -27,6 +27,35 @@ func TestConvertEvent_ActorOnlyTypes(t *testing.T) {
 	}
 }
 
+func TestConvertEvent_CrossReferenceKeepsSource(t *testing.T) {
+	at := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
+	ref := func(typename, repo string, number int) *rawRef {
+		r := &rawRef{Typename: typename, Number: number}
+		r.Repository.NameWithOwner = repo
+		return r
+	}
+	tests := []struct {
+		name   string
+		source *rawRef
+		want   *Ref
+	}{
+		{"pull request", ref("PullRequest", "o/r", 12), &Ref{Kind: KindPullRequest, Repo: "o/r", Number: 12}},
+		{"issue", ref("Issue", "x/y", 3), &Ref{Kind: KindIssue, Repo: "x/y", Number: 3}},
+		{"control characters", ref("Issue", "x/y\u001b[2J", 3), &Ref{Kind: KindIssue, Repo: "x/y[2J", Number: 3}},
+		{"empty node", ref("", "", 0), nil},
+		{"null", nil, nil},
+	}
+	for _, tt := range tests {
+		got, ok := convertEvent(rawEvent{Typename: "CrossReferencedEvent", ID: "CRE_1", CreatedAt: at, Actor: &rawActor{Login: "alice"}, Source: tt.source})
+		if !ok || got.Type != EventReferenced || got.ID != "CRE_1" || got.Actor != "alice" || !got.At.Equal(at) {
+			t.Errorf("%s: convertEvent = %+v, %v; want referenced by alice at %v", tt.name, got, ok, at)
+		}
+		if (got.Source == nil) != (tt.want == nil) || (got.Source != nil && *got.Source != *tt.want) {
+			t.Errorf("%s: Source = %+v, want %+v", tt.name, got.Source, tt.want)
+		}
+	}
+}
+
 func TestConvertEvent_SkipsUnknownType(t *testing.T) {
 	if got, ok := convertEvent(rawEvent{Typename: "LabeledEvent"}); ok {
 		t.Errorf("convertEvent(LabeledEvent) = %+v, true; want false", got)
