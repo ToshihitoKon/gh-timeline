@@ -52,7 +52,7 @@ owner/repo PR#130 Fix typo
   14:03 approved erin
 ```
 
-Consecutive events of the same kind by the same person are combined, such as `commented (3)` or `→ bob, carol`. Your own actions are dimmed, and so is the heading when all of its events are yours.
+Consecutive events of the same kind by the same person are combined for `commented`, `reviewed`, `replied`, and `pushed N commits`, such as `commented (3)`, and for `review requested` and `assigned`, such as `→ bob, carol`. Other actions are shown one per line. Your own actions are dimmed, and so is the heading when all of its events are yours.
 
 Actions:
 
@@ -64,6 +64,7 @@ Actions:
 - `review requested`, `assigned`
 - `ready for review`, `converted to draft`
 - `updated`: other changes such as title, body, or label edits
+  - The person is shown as `-`, since gh-timeline does not know who made the change.
 
 ## Install
 
