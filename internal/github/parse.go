@@ -54,6 +54,10 @@ type rawItem struct {
 	Reviews struct {
 		Nodes []rawEvent `json:"nodes"`
 	} `json:"reviews"` // PR のみ
+	HeadRefName    string `json:"headRefName"` // PR のみ
+	HeadRepository *struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"headRepository"` // PR のみ。fork が削除されると null
 }
 
 type rawEvent struct {
@@ -69,6 +73,7 @@ type rawEvent struct {
 		Nodes      []rawReviewComment `json:"nodes"`
 	} `json:"comments"`
 	Commit *struct {
+		OID           string    `json:"oid"`
 		CommittedDate time.Time `json:"committedDate"`
 		Author        *struct {
 			Name string    `json:"name"`
@@ -163,6 +168,10 @@ func convertItem(raw rawItem) (Item, bool) {
 		IsDraft:     raw.IsDraft,
 		Author:      loginOrGhost(raw.Author),
 		UpdatedAt:   raw.UpdatedAt,
+		headRef:     raw.HeadRefName,
+	}
+	if raw.HeadRepository != nil {
+		item.headRepo = raw.HeadRepository.NameWithOwner
 	}
 	for _, re := range slices.Concat(raw.TimelineItems.Nodes, raw.Reviews.Nodes) {
 		if ev, ok := convertEvent(re); ok {
@@ -190,7 +199,7 @@ func convertEvent(raw rawEvent) (Event, bool) {
 		if raw.Commit == nil {
 			return Event{}, false
 		}
-		return Event{Type: EventCommitted, Actor: commitActor(raw), At: raw.Commit.CommittedDate}, true
+		return Event{Type: EventCommitted, Actor: commitActor(raw), At: raw.Commit.CommittedDate, commitOID: raw.Commit.OID}, true
 	case "MergedEvent":
 		return actorEvent(EventMerged, raw), true
 	case "ClosedEvent":
