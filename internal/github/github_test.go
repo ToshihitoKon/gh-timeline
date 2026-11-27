@@ -388,6 +388,23 @@ func TestSearchQuery_FetchesCommentsOnlyInReviewFragment(t *testing.T) {
 	}
 }
 
+// 開いている issue を PR から参照すると、GitHub は updatedAt を進めて CrossReferencedEvent だけを記録する。
+// 取らないと、その更新が "updated -" として出る。
+func TestSearchQuery_FetchesCrossReferencesOfPullRequestsAndIssues(t *testing.T) {
+	itemTypes := regexp.MustCompile(`itemTypes: \[[^\]]*\]`).FindAllString(searchQuery, -1)
+	if len(itemTypes) != 2 {
+		t.Fatalf("found %d itemTypes lists, want 2 (pull requests and issues): %q", len(itemTypes), itemTypes)
+	}
+	for _, list := range itemTypes {
+		if !strings.Contains(list, "CROSS_REFERENCED_EVENT") {
+			t.Errorf("%s does not include CROSS_REFERENCED_EVENT", list)
+		}
+	}
+	if !strings.Contains(searchQuery, "... on CrossReferencedEvent {") {
+		t.Error("timelineItem fragment does not read CrossReferencedEvent")
+	}
+}
+
 func TestClientSearch_PassesQueryVariablesToGH(t *testing.T) {
 	var gotArgs []string
 	fake := func(_ context.Context, args ...string) ([]byte, error) {

@@ -59,6 +59,7 @@ const (
 	EventConvertedToDraft
 	EventForcePushed
 	EventAssigned
+	EventReferenced // 他の PR / issue から参照された。参照元は Event.Source
 	// EventUpdated は個別のイベントを取得できなかった更新。タイトル・本文の編集など、取得対象外の操作だけで
 	// updatedAt が進んだときに timeline.Tracker が作る。誰の操作かは分からないため Actor は空にする。
 	EventUpdated
@@ -75,9 +76,19 @@ type Event struct {
 	Type   EventType
 	Actor  string // 行った人の login。コミットで GitHub ユーザーに紐づかない場合は author 名
 	Target string // レビュー依頼先・アサイン先など、対象がある種類のみ
+	// Source は参照元の PR / issue。EventReferenced のみで、参照元を読めなかったときは nil。
+	// Target に入れないのは、Target が人やチームを指し、描画側がユーザーとして出すため。
+	Source *Ref
 	At     time.Time
 	// IsPushTimeUnknown は、コミットの At を push の時刻に置き換えられず、committedDate のままであることを示す。
 	IsPushTimeUnknown bool
+}
+
+// Ref は PR / issue を指す。
+type Ref struct {
+	Kind   Kind
+	Repo   string // owner/name
+	Number int
 }
 
 // Item は検索でヒットした PR / issue。

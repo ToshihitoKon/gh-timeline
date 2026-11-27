@@ -131,6 +131,15 @@ type rawEvent struct {
 		Name  string `json:"name"` // Team の場合
 	} `json:"requestedReviewer"`
 	Assignee *rawActor `json:"assignee"`
+	Source   *rawRef   `json:"source"` // CrossReferencedEvent の参照元
+}
+
+type rawRef struct {
+	Typename   string `json:"__typename"`
+	Number     int    `json:"number"`
+	Repository struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"repository"`
 }
 
 type rawReviewComment struct {
@@ -297,8 +306,29 @@ func convertEvent(raw rawEvent) (Event, bool) {
 			ev.Target = raw.Assignee.Login
 		}
 		return ev, true
+	case "CrossReferencedEvent":
+		ev := actorEvent(EventReferenced, raw)
+		ev.Source = convertRef(raw.Source)
+		return ev, true
 	}
 	return Event{}, false
+}
+
+// convertRef は参照元を Ref にする。PR / issue 以外（権限不足で中身が空のノードなど）は nil を返す。
+func convertRef(raw *rawRef) *Ref {
+	if raw == nil {
+		return nil
+	}
+	ref := &Ref{Repo: stripControl(raw.Repository.NameWithOwner), Number: raw.Number}
+	switch raw.Typename {
+	case "PullRequest":
+		ref.Kind = KindPullRequest
+	case "Issue":
+		ref.Kind = KindIssue
+	default:
+		return nil
+	}
+	return ref
 }
 
 func reviewEventType(raw rawEvent) EventType {

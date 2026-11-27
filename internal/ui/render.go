@@ -216,7 +216,7 @@ func batchLines(b timeline.Batch, prevCheckedAt time.Time, opts RenderOptions) [
 			lines = append(lines, newBatchLine(lineURL, eventIndent+hyperlink(urlText, linkURL)))
 		}
 		for _, ev := range blk.Events {
-			lines = append(lines, newBatchLine(lineEvent, renderEventLine(ev, b.CheckedAt, opts.Viewer)))
+			lines = append(lines, newBatchLine(lineEvent, renderEventLine(ev, blk.Item.Repo, b.CheckedAt, opts.Viewer)))
 		}
 	}
 	return lines
@@ -284,10 +284,6 @@ const eventIndent = "  "
 // タイトルまで含めると、すべての見出しに長い下線が付いて画面がうるさくなるため、タイトルは含めない。
 func renderItemHeader(blk itemBlock, viewer, linkURL string) string {
 	item := blk.Item
-	kind := "IS"
-	if item.Kind == github.KindPullRequest {
-		kind = "PR"
-	}
 	repoSt, numberSt, gapSt, titleSt := repoStyle, itemStateStyle(item).Bold(true), lipgloss.NewStyle(), textStyle
 	isOnlyViewer := !slices.ContainsFunc(blk.Events, func(ev displayEvent) bool { return ev.Actor != viewer })
 	if isOnlyViewer {
@@ -296,12 +292,31 @@ func renderItemHeader(blk itemBlock, viewer, linkURL string) string {
 	isLinked := linkURL != ""
 	ref := repoSt.Underline(isLinked).Render(item.Repo) +
 		gapSt.Underline(isLinked).Render(" ") +
-		numberSt.Underline(isLinked).Render(fmt.Sprintf("%s#%d", kind, item.Number))
+		numberSt.Underline(isLinked).Render(numberLabel(item.Kind, item.Number))
 	return hyperlink(ref, linkURL) + gapSt.Render(" ") + titleSt.Render(item.Title)
 }
 
-// renderEventLine は "  14:01 review requested dave → you, erin" のイベント行を描画する。
-func renderEventLine(ev displayEvent, checkedAt time.Time, viewer string) string {
+// numberLabel は "PR#123" / "IS#45" を返す。
+func numberLabel(kind github.Kind, number int) string {
+	prefix := "IS"
+	if kind == github.KindPullRequest {
+		prefix = "PR"
+	}
+	return fmt.Sprintf("%s#%d", prefix, number)
+}
+
+// refLabel は ref を、itemRepo と同じリポジトリなら "PR#123"、違えば "owner/repo PR#123" と書く。
+func refLabel(ref github.Ref, itemRepo string) string {
+	label := numberLabel(ref.Kind, ref.Number)
+	if ref.Repo == itemRepo {
+		return label
+	}
+	return ref.Repo + " " + label
+}
+
+// renderEventLine は "  14:01 review requested dave → you, erin" や "  14:01 referenced in PR#12 dave" のイベント行を描画する。
+// itemRepo はイベントが起きた PR / issue のリポジトリで、参照元と同じリポジトリならリポジトリ名を省く。
+func renderEventLine(ev displayEvent, itemRepo string, checkedAt time.Time, viewer string) string {
 	// 自分の操作は、他の人の動きより目立たないよう、要素ごとの色を付けずに行全体を薄くする。
 	// 隠さないのは、自分の push が CI の再実行やレビューの再依頼につながる場面もあり、
 	// 時系列の文脈として残しておきたいため。
@@ -317,8 +332,11 @@ func renderEventLine(ev displayEvent, checkedAt time.Time, viewer string) string
 	parts := []string{
 		render(faintStyle, formatTimeOnDayOf(ev.At, checkedAt)),
 		render(kind.style, kind.label(ev.Count)),
-		render(userStyle, ev.Actor),
 	}
+	if ev.Source != nil {
+		parts = append(parts, render(kind.style, "in")+" "+render(repoStyle, refLabel(*ev.Source, itemRepo)))
+	}
+	parts = append(parts, render(userStyle, ev.Actor))
 	if len(ev.Targets) > 0 {
 		parts = append(parts, render(faintStyle, "→")+" "+render(userStyle, strings.Join(ev.Targets, ", ")))
 	}
@@ -434,6 +452,7 @@ var eventKinds = map[github.EventType]eventKind{
 	github.EventConvertedToDraft: {label: fixedLabel("converted to draft"), style: actionStyle},
 	github.EventForcePushed:      {label: fixedLabel("force-pushed"), style: actionStyle},
 	github.EventAssigned:         {label: fixedLabel("assigned"), style: actionStyle, collapse: collapseByTargets},
+	github.EventReferenced:       {label: fixedLabel("referenced"), style: actionStyle},
 	github.EventUpdated:          {label: fixedLabel("updated"), style: actionStyle},
 }
 
