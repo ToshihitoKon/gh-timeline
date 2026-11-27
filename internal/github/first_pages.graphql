@@ -1,0 +1,7 @@
+query firstPages($authored: String!, $assigned: String!, $reviewRequested: String!, $reviewedBy: String!, $first: Int!) {
+  viewer { login }
+  authored: search(query: $authored, type: ISSUE, first: $first) { ...results }
+  assigned: search(query: $assigned, type: ISSUE, first: $first) { ...results }
+  reviewRequested: search(query: $reviewRequested, type: ISSUE, first: $first) { ...results }
+  reviewedBy: search(query: $reviewedBy, type: ISSUE, first: $first) { ...results }
+}

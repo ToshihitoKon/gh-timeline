@@ -276,7 +276,7 @@ func (m Model) footer() string {
 	return keys
 }
 
-// oneLine は、複数行になりうるメッセージ（gh の stderr など）をフッタの 1 行に収める。
+// oneLine は、複数行になりうるメッセージ（GitHub API の HTTP エラーなど）をフッタの 1 行に収める。
 func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }

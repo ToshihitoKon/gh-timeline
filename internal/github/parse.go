@@ -3,8 +3,6 @@ package github
 import (
 	"cmp"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -14,18 +12,10 @@ import (
 // ghostLogin は削除済みアカウントの表示名。GitHub の Web 表示に合わせている。
 const ghostLogin = "ghost"
 
-type response[T any] struct {
-	// Data は、エラーで結果を何も返せないときに null になる。
-	Data   *T `json:"data"`
-	Errors []struct {
-		Message string `json:"message"`
-	} `json:"errors"`
-}
-
-// firstPages は search.graphql の firstPages の応答の data。
+// firstPages は first_pages.graphql の応答の data。
 type firstPages struct {
 	Viewer struct{ Login string } `json:"viewer"`
-	// searches は検索結果を、search.graphql で付けた別名（searchQueries のキー）ごとに持つ。
+	// searches は検索結果を、first_pages.graphql で付けた別名（searchQueries のキー）ごとに持つ。
 	// 検索条件ごとのフィールドを並べないのは、名前を書く場所が増え、書き忘れた検索条件の結果を
 	// JSON の読み込みが黙って捨てるため。
 	searches map[string]*searchConnection
@@ -44,7 +34,7 @@ func (p *firstPages) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// namedConnection は検索条件の名前（search.graphql の変数名）と、その検索結果。
+// namedConnection は検索条件の名前（first_pages.graphql の変数名）と、その検索結果。
 type namedConnection struct {
 	name string
 	conn *searchConnection
@@ -63,7 +53,7 @@ func (p *firstPages) connections(names []string) []namedConnection {
 	return conns
 }
 
-// nextPage は search.graphql の nextPage の応答の data。
+// nextPage は next_page.graphql の応答の data。
 type nextPage struct {
 	Search searchConnection `json:"search"`
 }
@@ -135,31 +125,6 @@ type rawEvent struct {
 
 type rawReviewComment struct {
 	ReplyTo *struct{} `json:"replyTo"`
-}
-
-// decodeResponse は gh api graphql の応答から data と errors のメッセージを取り出す。
-// runErr は gh の実行時のエラーで、応答を読めなかったときは、その理由をよく表している gh の stderr を含む runErr を返す。
-func decodeResponse[T any](body []byte, runErr error) (*T, []string, error) {
-	var resp response[T]
-	if err := json.Unmarshal(body, &resp); err != nil {
-		if runErr != nil {
-			return nil, nil, runErr
-		}
-		return nil, nil, fmt.Errorf("parse GraphQL response: %w", err)
-	}
-	// 権限の無い PR / issue は errors に載り、該当のノードは空になる。
-	// 1 件のために全体を失敗させず、data があれば残りの結果を使う。
-	var msgs []string
-	for _, e := range resp.Errors {
-		msgs = append(msgs, e.Message)
-	}
-	if resp.Data == nil {
-		if runErr != nil {
-			return nil, nil, runErr
-		}
-		return nil, nil, errors.New("GraphQL error: " + strings.Join(msgs, "; "))
-	}
-	return resp.Data, msgs, nil
 }
 
 // buildResult は検索結果を、条件をまたいで重複を除いた SearchResult にする。

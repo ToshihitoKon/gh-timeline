@@ -2,11 +2,13 @@ package github
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"slices"
 	"time"
+
+	"github.com/cli/go-gh/v2/pkg/api"
 )
 
 // pushActivityPageSize は 1 つのブランチについて取得する push の件数。
@@ -61,21 +63,17 @@ func newestCommitID(item Item) string {
 }
 
 // fetchPushes は repo の ref ブランチへの push を古い順に返す。
-func fetchPushes(ctx context.Context, run Runner, repo, ref string) ([]push, error) {
+func fetchPushes(ctx context.Context, rest *api.RESTClient, repo, ref string) ([]push, error) {
 	query := url.Values{}
 	query.Set("ref", "refs/heads/"+ref)
 	query.Set("per_page", fmt.Sprint(pushActivityPageSize))
-	out, err := run(ctx, "api", fmt.Sprintf("repos/%s/activity?%s", repo, query.Encode()))
-	if err != nil {
-		return nil, err
-	}
 	var activities []struct {
 		After        string    `json:"after"`
 		Timestamp    time.Time `json:"timestamp"`
 		ActivityType string    `json:"activity_type"`
 	}
-	if err := json.Unmarshal(out, &activities); err != nil {
-		return nil, fmt.Errorf("parse repository activity: %w", err)
+	if err := rest.DoWithContext(ctx, http.MethodGet, fmt.Sprintf("repos/%s/activity?%s", repo, query.Encode()), nil, &activities); err != nil {
+		return nil, describeTimeout(ctx, err)
 	}
 	var pushes []push
 	for _, a := range activities {

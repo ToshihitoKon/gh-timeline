@@ -85,13 +85,13 @@ func (f fakeFetcher) Search(context.Context, time.Time) (github.SearchResult, er
 	return f.result, nil
 }
 
-// hangingFetcher は gh が戻らない状況を模し、ctx が終わるまで返らない。
-// 返すエラーは、打ち切られたときの ExecGH と同じ形にする。
+// hangingFetcher は GitHub API の応答が戻らない状況を模し、ctx が終わるまで返らない。
+// 返すエラーは、打ち切られたときの github.Client と同じ形にする。
 type hangingFetcher struct{}
 
 func (hangingFetcher) Search(ctx context.Context, _ time.Time) (github.SearchResult, error) {
 	<-ctx.Done()
-	return github.SearchResult{}, fmt.Errorf("gh api: timed out: %w", ctx.Err())
+	return github.SearchResult{}, fmt.Errorf("GitHub API: timed out: %w", ctx.Err())
 }
 
 // dump は -since 30m の初回ポーリングとして runDump を実行し、stdout と stderr に出したものを返す。
@@ -186,8 +186,8 @@ func TestRunDump_GivesUpAfterTimeout(t *testing.T) {
 
 	select {
 	case got := <-done:
-		// ExecGH が時間切れと書いたエラーを、包み直さずにそのまま返す
-		if want := "gh api: timed out: context deadline exceeded"; got.err == nil || got.err.Error() != want {
+		// github.Client が時間切れと書いたエラーを、包み直さずにそのまま返す
+		if want := "GitHub API: timed out: context deadline exceeded"; got.err == nil || got.err.Error() != want {
 			t.Fatalf("runDump() = %v, want %q", got.err, want)
 		}
 		if got.stdout != "" || got.stderr != "" {
