@@ -189,14 +189,33 @@ func TestTrackerApply_RemembersShownCommitWithUnknownPushTime(t *testing.T) {
 	}
 }
 
-func TestTrackerApply_ShowsUpdateWithoutNewEventsAsEmpty(t *testing.T) {
+// isUpdatedOnlyAt は events が、at に起きた誰の操作か分からない EventUpdated だけかを返す。
+func isUpdatedOnlyAt(events []github.Event, at time.Time) bool {
+	return len(events) == 1 && events[0].Type == github.EventUpdated && events[0].Actor == "" && events[0].At.Equal(at)
+}
+
+func TestTrackerApply_ShowsUpdateWithoutNewEventsAsUpdatedEvent(t *testing.T) {
 	tr := NewTracker(at(-60))
 	tr.Apply(tr.StartPoll(at(0)), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
 
 	// タイトルの編集など、取得対象外の操作で updatedAt だけが進んだ
 	batch := tr.Apply(tr.StartPoll(at(5)), []github.Item{pr(1, 3, comment("c1", "alice", -10))})
-	if len(batch.Entries) != 1 || len(batch.Entries[0].Events) != 0 {
-		t.Errorf("entries = %+v, want one entry without events", batch.Entries)
+	if len(batch.Entries) != 1 || !isUpdatedOnlyAt(batch.Entries[0].Events, at(3)) {
+		t.Errorf("entries = %+v, want one entry with only an EventUpdated at updatedAt", batch.Entries)
+	}
+}
+
+func TestTrackerApply_SortsUpdateWithoutNewEventsByUpdatedAt(t *testing.T) {
+	tr := NewTracker(at(-60))
+	tr.Apply(tr.StartPoll(at(0)), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
+
+	// #1 はイベントを伴わずに 12:04 に更新され、#2 には 12:02 のコメントが付いた
+	batch := tr.Apply(tr.StartPoll(at(5)), []github.Item{
+		pr(2, 2, comment("c2", "bob", 2)),
+		pr(1, 4, comment("c1", "alice", -10)),
+	})
+	if len(batch.Entries) != 2 || batch.Entries[0].Item.Number != 1 || batch.Entries[1].Item.Number != 2 {
+		t.Errorf("entries = %+v, want #1 (updated at 12:04) then #2", batch.Entries)
 	}
 }
 
@@ -225,8 +244,8 @@ func TestTrackerApply_IgnoresOldEventShiftedIntoFetchedRange(t *testing.T) {
 
 	// 新しいイベントが消え、取得する直近の件数に、初めて見たときの始点より前のコメントが入ってきた
 	batch := tr.Apply(tr.StartPoll(at(5)), []github.Item{pr(1, 3, comment("older", "carol", -90), comment("c1", "alice", -5))})
-	if len(batch.Entries) != 1 || len(batch.Entries[0].Events) != 0 {
-		t.Errorf("entries = %+v, want one entry without events (the old comment is not new)", batch.Entries)
+	if len(batch.Entries) != 1 || !isUpdatedOnlyAt(batch.Entries[0].Events, at(3)) {
+		t.Errorf("entries = %+v, want one entry with only an EventUpdated (the old comment is not new)", batch.Entries)
 	}
 }
 

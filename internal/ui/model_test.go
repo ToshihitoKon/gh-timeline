@@ -111,14 +111,15 @@ func TestRenderBatches_CollapsesNoisyEvents(t *testing.T) {
 func TestRenderBatches_DateShownWhenDayChanges(t *testing.T) {
 	prev := time.Date(2026, 11, 19, 23, 58, 0, 0, jst)
 	yesterday := github.Event{Type: github.EventCommented, Actor: "alice", At: time.Date(2026, 11, 19, 23, 59, 0, 0, jst)}
+	updated := github.Event{Type: github.EventUpdated, At: timeAt(14, 0)}
 	b := timeline.Batch{
 		CheckedAt: timeAt(0, 3),
-		Entries:   []timeline.Entry{entry(), entry(yesterday)},
+		Entries:   []timeline.Entry{entry(updated), entry(yesterday)},
 	}
 	got := ansi.Strip(RenderBatches([]timeline.Batch{{CheckedAt: prev}, b}, 0, RenderOptions{Viewer: "me"}))
 	want := strings.Join([]string{
 		"--- 11/20 00:03 ---",
-		// イベントの無い更新は updatedAt を "updated" として、誰の操作か分からないので "-" で出す
+		// 誰の操作か分からない EventUpdated は、行った人を "-" で出す
 		"o/r PR#7 Add feature",
 		"  14:00 updated -",
 		"o/r PR#7 Add feature",
