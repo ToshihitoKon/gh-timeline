@@ -102,19 +102,17 @@ func (t *Tracker) Since() time.Time {
 	return since
 }
 
-// Apply は startedAt に開始したポーリングの検索結果から、新しい更新を取り出す。
-// 検索範囲の始点は、検索を始めたときの Since() とみなす。
-func (t *Tracker) Apply(startedAt time.Time, items []github.Item) Batch {
-	since := t.Since()
-	batch := Batch{CheckedAt: startedAt}
+// Apply は p のポーリングの検索結果から、新しい更新を取り出す。
+func (t *Tracker) Apply(p Poll, items []github.Item) Batch {
+	batch := Batch{CheckedAt: p.StartedAt}
 	for _, item := range items {
-		if entry, ok := t.newEntry(item, since); ok {
+		if entry, ok := t.newEntry(item, p.Since); ok {
 			batch.Entries = append(batch.Entries, entry)
 		}
 	}
 	slices.SortStableFunc(batch.Entries, func(a, b Entry) int { return b.shownAt().Compare(a.shownAt()) })
-	t.forgetBefore(since.Add(-seenRetention))
-	t.lastStartedAt = startedAt
+	t.forgetBefore(p.Since.Add(-seenRetention))
+	t.lastStartedAt = p.StartedAt
 	return batch
 }
 

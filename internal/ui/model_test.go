@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -320,11 +321,11 @@ func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 	return cmd()
 }
 
-func newReadyModel(f Fetcher) Model {
+func newReadyModel(f timeline.Fetcher) Model {
 	return newReadyModelWithHeight(f, 20)
 }
 
-func newReadyModelWithHeight(f Fetcher, height int) Model {
+func newReadyModelWithHeight(f timeline.Fetcher, height int) Model {
 	m := NewModel(f, timeline.NewTracker(time.Now().Add(-time.Hour)), 5*time.Minute, false)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: height})
 	return next.(Model)
@@ -349,7 +350,7 @@ func TestModel_FetchAppendsBatchOnlyWhenUpdated(t *testing.T) {
 
 	// 同じ結果がもう一度返っても、区切り行ごと追加しない
 	m.isFetching = true
-	next, _ = m.Update(fetchedMsg{startedAt: time.Now(), result: github.SearchResult{Viewer: "me", Items: []github.Item{item}}})
+	next, _ = m.Update(fetchedMsg{poll: m.tracker.StartPoll(time.Now()), result: github.SearchResult{Viewer: "me", Items: []github.Item{item}}})
 	m = next.(Model)
 	if len(m.batches) != 1 {
 		t.Errorf("batches = %d, want still 1", len(m.batches))
@@ -539,9 +540,8 @@ func applyFetch(t *testing.T, m Model, items ...github.Item) Model {
 	t.Helper()
 	m.isFetching = true
 	next, _ := m.Update(fetchedMsg{
-		startedAt: time.Now(),
-		since:     m.tracker.Since(),
-		result:    github.SearchResult{Viewer: "me", Items: items},
+		poll:   m.tracker.StartPoll(time.Now()),
+		result: github.SearchResult{Viewer: "me", Items: items},
 	})
 	return next.(Model)
 }
@@ -550,7 +550,7 @@ func applyFetch(t *testing.T, m Model, items ...github.Item) Model {
 func failFetch(t *testing.T, m Model) Model {
 	t.Helper()
 	m.isFetching = true
-	next, _ := m.Update(fetchedMsg{startedAt: time.Now(), since: m.tracker.Since(), err: errors.New("boom")})
+	next, _ := m.Update(fetchedMsg{poll: m.tracker.StartPoll(time.Now()), err: errors.New("boom")})
 	return next.(Model)
 }
 
@@ -584,7 +584,7 @@ func TestModel_PartialErrorsShowInFooterWithResults(t *testing.T) {
 	m := newReadyModel(fakeFetcher{})
 	m.isFetching = true
 	next, _ := m.Update(fetchedMsg{
-		startedAt: time.Now(),
+		poll: m.tracker.StartPoll(time.Now()),
 		result: github.SearchResult{
 			Viewer:        "me",
 			Items:         []github.Item{newItem(1, 1)},
@@ -603,6 +603,20 @@ func TestModel_PartialErrorsShowInFooterWithResults(t *testing.T) {
 	m = applyFetch(t, m)
 	if footer := ansi.Strip(m.footer()); strings.Contains(footer, "missing") {
 		t.Errorf("footer = %q, want no warning after a clean fetch", footer)
+	}
+}
+
+func TestModel_TruncatedWarningShowsInFooter(t *testing.T) {
+	m := newReadyModel(fakeFetcher{})
+	m.isFetching = true
+	next, _ := m.Update(fetchedMsg{
+		poll:   m.tracker.StartPoll(time.Now()),
+		result: github.SearchResult{Viewer: "me", Truncated: true},
+	})
+	m = next.(Model)
+	want := fmt.Sprintf("some results were truncated: over %d hits", github.SearchPageSize)
+	if footer := ansi.Strip(m.footer()); !strings.HasPrefix(footer, want) {
+		t.Errorf("footer = %q, want it to start with %q", footer, want)
 	}
 }
 
@@ -656,12 +670,12 @@ func TestModel_FetchErrorKeepsLastSuccessfulCheckTime(t *testing.T) {
 	m := newReadyModel(fakeFetcher{})
 	m.isFetching = true
 	next, _ := m.Update(fetchedMsg{
-		startedAt: time.Date(2026, 11, 20, 11, 45, 0, 0, time.Local),
-		result:    github.SearchResult{Viewer: "me"},
+		poll:   m.tracker.StartPoll(time.Date(2026, 11, 20, 11, 45, 0, 0, time.Local)),
+		result: github.SearchResult{Viewer: "me"},
 	})
 	m = next.(Model)
 	m.isFetching = true
-	next, _ = m.Update(fetchedMsg{startedAt: time.Date(2026, 11, 20, 11, 50, 0, 0, time.Local), err: errors.New("boom")})
+	next, _ = m.Update(fetchedMsg{poll: m.tracker.StartPoll(time.Date(2026, 11, 20, 11, 50, 0, 0, time.Local)), err: errors.New("boom")})
 	m = next.(Model)
 	if got := ansi.Strip(m.statusLine()); !strings.HasPrefix(got, "checked 11:45 · next ") {
 		t.Errorf("status line = %q, want the time of the last successful check", got)
@@ -671,7 +685,7 @@ func TestModel_FetchErrorKeepsLastSuccessfulCheckTime(t *testing.T) {
 func TestModel_FirstFetchErrorShowsOnlyNextPoll(t *testing.T) {
 	m := newReadyModel(fakeFetcher{})
 	m.isFetching = true
-	next, _ := m.Update(fetchedMsg{startedAt: time.Now(), err: errors.New("boom")})
+	next, _ := m.Update(fetchedMsg{poll: m.tracker.StartPoll(time.Now()), err: errors.New("boom")})
 	m = next.(Model)
 	if got := ansi.Strip(m.statusLine()); strings.Contains(got, "checked") || !strings.HasPrefix(got, "next ") {
 		t.Errorf("status line = %q, want only the next poll before any successful check", got)
@@ -689,7 +703,7 @@ func TestModel_ViewTruncatesTitleToWidth(t *testing.T) {
 func TestModel_FetchErrorShownInFooter(t *testing.T) {
 	m := newReadyModel(fakeFetcher{})
 	m.isFetching = true
-	next, cmd := m.Update(fetchedMsg{startedAt: time.Now(), err: errors.New("gh api: exit status 1:\nHTTP 401")})
+	next, cmd := m.Update(fetchedMsg{poll: m.tracker.StartPoll(time.Now()), err: errors.New("gh api: exit status 1:\nHTTP 401")})
 	m = next.(Model)
 	if cmd == nil {
 		t.Error("next poll not scheduled after error")
