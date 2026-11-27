@@ -111,6 +111,20 @@ func TestTrackerApply_ShowsOnlyUnshownEvents(t *testing.T) {
 	}
 }
 
+func TestTrackerApply_EntryDoesNotKeepFetchedEvents(t *testing.T) {
+	tr := NewTracker(at(-60))
+	tr.Apply(tr.StartPoll(at(0)), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
+
+	batch := tr.Apply(tr.StartPoll(at(5)), []github.Item{pr(1, 3, comment("c1", "alice", -10), comment("c2", "bob", 3))})
+	if len(batch.Entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(batch.Entries))
+	}
+	// 表示しない c1 を含む取得済みのイベントは、履歴に残る Entry に持たせない
+	if got := batch.Entries[0].Item.Events; got != nil {
+		t.Errorf("Item.Events = %v, want nil", eventIDs(got))
+	}
+}
+
 func TestTrackerApply_ShowsCommitPushedLaterToSeenItem(t *testing.T) {
 	tr := NewTracker(at(-60))
 	tr.Apply(tr.StartPoll(at(0)), []github.Item{pr(1, -10, comment("c1", "alice", -10))})

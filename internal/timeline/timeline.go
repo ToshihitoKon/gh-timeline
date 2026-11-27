@@ -26,6 +26,7 @@ const seenRetention = time.Hour
 
 // Entry は 1 回のポーリングで見つかった、1 つの PR / issue の更新。
 type Entry struct {
+	// Item は Events を空にしたもの。Entry は履歴として残り続けるため、表示しない取得済みのイベントまで持たない。
 	Item github.Item
 	// Events はまだ表示していないイベント（古い順）。
 	// タイトル・本文の編集やラベル変更のように、取得対象外の操作だけで
@@ -144,6 +145,7 @@ func (t *Tracker) newEntry(item github.Item, since time.Time) (entry Entry, ok b
 	if len(events) == 0 && !isUpdated {
 		return Entry{}, false
 	}
+	item.Events = nil
 	return Entry{Item: item, Events: events}, true
 }
 
