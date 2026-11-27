@@ -2,14 +2,13 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime/debug"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -73,7 +72,7 @@ func main() {
 	tracker := timeline.NewTracker(time.Now().Add(-*lookback))
 
 	if *dump {
-		if err := runDump(client, tracker, *showURL, ui.FetchTimeout); err != nil {
+		if err := runDump(os.Stdout, os.Stderr, client, tracker, time.Now(), *showURL, timeline.FetchTimeout); err != nil {
 			fmt.Fprintln(os.Stderr, "gh-timeline:", err)
 			os.Exit(1)
 		}
@@ -100,32 +99,26 @@ func checkFlags(interval, lookback time.Duration) error {
 	return nil
 }
 
-// runDump は TUI を介さず、初回ポーリングと同じ内容をテキストで出力する。
-func runDump(fetcher ui.Fetcher, tracker *timeline.Tracker, showURL bool, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	now := time.Now()
-	since := tracker.Since()
-	result, err := fetcher.Search(ctx, since)
+// runDump は TUI を介さず、startedAt に始めた初回ポーリングと同じ内容をテキストで出力する。
+// 更新と取りこぼしの警告を stdout に、結果の一部を取得できなかったことを stderr に出す。
+func runDump(stdout, stderr io.Writer, fetcher timeline.Fetcher, tracker *timeline.Tracker, startedAt time.Time, showURL bool, timeout time.Duration) error {
+	poll := tracker.StartPoll(startedAt)
+	result, err := poll.Fetch(fetcher, timeout)
 	if err != nil {
-		// gh が打ち切られたときのエラーは "signal: killed" だけで、時間切れだと読み取れない。
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("gave up after %s: %w", timeout, err)
-		}
+		// 時間切れは ExecGH が "timed out" と書いて返すため、ここで包み直さない。
 		return err
 	}
-	batch := tracker.Apply(now, result.Items)
-	if len(result.PartialErrors) > 0 {
-		fmt.Fprintln(os.Stderr, "gh-timeline: some results are missing:", strings.Join(result.PartialErrors, "; "))
+	batch := tracker.Apply(poll, result.Items)
+	if warning := timeline.MissingResultsWarning(result); warning != "" {
+		fmt.Fprintln(stderr, "gh-timeline:", warning)
 	}
 	if len(batch.Entries) == 0 {
-		fmt.Println(ui.NoUpdatesText(since))
-		return nil
+		fmt.Fprintln(stdout, ui.NoUpdatesText(poll.Since))
+	} else {
+		fmt.Fprintln(stdout, ui.RenderBatches([]timeline.Batch{batch}, 0, ui.RenderOptions{Viewer: result.Viewer, ShowURL: showURL}))
 	}
-	fmt.Println(ui.RenderBatches([]timeline.Batch{batch}, 0, ui.RenderOptions{Viewer: result.Viewer, ShowURL: showURL}))
-	if result.Truncated {
-		fmt.Printf("(some results were truncated: over %d hits)\n", github.MaxSearchHits)
+	if warning := timeline.TruncatedWarning(result); warning != "" {
+		fmt.Fprintf(stdout, "(%s)\n", warning)
 	}
 	return nil
 }

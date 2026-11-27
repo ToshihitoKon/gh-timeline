@@ -6,7 +6,6 @@
 package ui
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -20,35 +19,23 @@ import (
 	"github.com/ToshihitoKon/gh-timeline/internal/timeline"
 )
 
-// FetchTimeout は 1 回のポーリングで gh コマンドを待つ上限。
-// 4 つの検索をまとめた GraphQL クエリは通常数秒で返るが、ネットワーク断などで
-// gh が戻らないとポーリングの自己クロックが止まってしまうため、間隔（既定 5 分）より
-// 十分短い値で打ち切る。
-const FetchTimeout = 60 * time.Second
-
 // spinnerFrameInterval はスピナーの 1 フレームあたりの時間（cc-dashboard と同じ 3fps）。
 const spinnerFrameInterval = time.Second / 3
 
 // chromeLines は viewport 以外に使う行数（タイトル・状態行・フッタ）。
 const chromeLines = 3
 
-// Fetcher は自分が関わる PR / issue を検索する。テストで差し替える。
-type Fetcher interface {
-	Search(ctx context.Context, since time.Time) (github.SearchResult, error)
-}
-
 type pollTickMsg struct{ seq int }
 
 type fetchedMsg struct {
-	startedAt time.Time
-	since     time.Time
-	result    github.SearchResult
-	err       error
+	poll   timeline.Poll
+	result github.SearchResult
+	err    error
 }
 
 // Model は TUI 全体の状態。
 type Model struct {
-	fetcher  Fetcher
+	fetcher  timeline.Fetcher
 	tracker  *timeline.Tracker
 	interval time.Duration
 	showURL  bool
@@ -61,9 +48,10 @@ type Model struct {
 	lastCheckedAt time.Time
 	nextPollAt    time.Time
 	lastErr       error
-	partialErrors []string
-	isTruncated   bool
-	isFetching    bool
+	// missingResultsWarning と truncatedWarning は直近に成功した取得の警告で、無ければ空文字列。
+	missingResultsWarning string
+	truncatedWarning      string
+	isFetching            bool
 
 	// readBatchCount は batches の古い側から何件を既読にしたか。既読にする操作は
 	// 「表示中の最新まで」の一種類だけなので、Batch ごとに既読かどうかを持たずに済む。
@@ -83,7 +71,7 @@ type Model struct {
 }
 
 // NewModel は Model を作る。showURL が true なら PR / issue の見出し行の次に URL の行を出す。
-func NewModel(fetcher Fetcher, tracker *timeline.Tracker, interval time.Duration, showURL bool) Model {
+func NewModel(fetcher timeline.Fetcher, tracker *timeline.Tracker, interval time.Duration, showURL bool) Model {
 	sp := spinner.New(spinner.WithSpinner(spinner.Spinner{Frames: spinner.Dot.Frames, FPS: spinnerFrameInterval}))
 	return Model{fetcher: fetcher, tracker: tracker, interval: interval, showURL: showURL, spinner: sp}
 }
@@ -96,13 +84,11 @@ func (m Model) Init() tea.Cmd {
 // Apply まで含めて tracker を触るのは Update（メインの goroutine）の中だけにする。
 func (m *Model) startFetch(now time.Time) tea.Cmd {
 	m.isFetching = true
-	since := m.tracker.Since()
+	poll := m.tracker.StartPoll(now)
 	fetcher := m.fetcher
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), FetchTimeout)
-		defer cancel()
-		result, err := fetcher.Search(ctx, since)
-		return fetchedMsg{startedAt: now, since: since, result: result, err: err}
+		result, err := poll.Fetch(fetcher, timeline.FetchTimeout)
+		return fetchedMsg{poll: poll, result: result, err: err}
 	}
 }
 
@@ -172,13 +158,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.isFetching = false
 		m.lastErr = msg.err
 		if msg.err == nil {
-			m.lastCheckedAt = msg.startedAt
+			m.lastCheckedAt = msg.poll.StartedAt
 			m.viewer = msg.result.Viewer
-			m.isTruncated = msg.result.Truncated
-			m.partialErrors = msg.result.PartialErrors
+			m.missingResultsWarning = timeline.MissingResultsWarning(msg.result)
+			m.truncatedWarning = timeline.TruncatedWarning(msg.result)
 			// 部分的な結果でも検索範囲を進める。SAML SSO のように毎回同じ PR / issue が取れない場合、
 			// 範囲を止めると広がり続け、やがて検索の上限件数に達するため。
-			batch := m.tracker.Apply(msg.startedAt, msg.result.Items)
+			batch := m.tracker.Apply(msg.poll, msg.result.Items)
 			hasUpdates := len(batch.Entries) > 0
 			if hasUpdates {
 				m.batches = append(m.batches, batch)
@@ -186,7 +172,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			isFirstFetch := m.watchingSince.IsZero()
 			if isFirstFetch {
 				m.readBatchCount = len(m.batches)
-				m.watchingSince = msg.since
+				m.watchingSince = msg.poll.Since
 			}
 			// 初回の取得では更新が無くても「Loading...」を「No updates since ...」に
 			// 置き換える必要があるため描き直す。
@@ -282,10 +268,10 @@ func (m Model) footer() string {
 	case m.lastErr != nil:
 		// 失敗した回は tracker の検索範囲を進めないので、次の成功時にまとめて取り直される。
 		return closedStyle.Render("error: "+oneLine(m.lastErr.Error())) + "   " + keys
-	case len(m.partialErrors) > 0:
-		return draftStyle.Render("some results are missing: "+oneLine(strings.Join(m.partialErrors, "; "))) + "   " + keys
-	case m.isTruncated:
-		return draftStyle.Render(fmt.Sprintf("some results were truncated (over %d hits)", github.MaxSearchHits)) + "   " + keys
+	case m.missingResultsWarning != "":
+		return draftStyle.Render(oneLine(m.missingResultsWarning)) + "   " + keys
+	case m.truncatedWarning != "":
+		return draftStyle.Render(m.truncatedWarning) + "   " + keys
 	}
 	return keys
 }
