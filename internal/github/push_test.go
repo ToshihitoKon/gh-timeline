@@ -89,6 +89,40 @@ func TestClientSearch_RetimesCommitsToPushTime(t *testing.T) {
 	}
 }
 
+func TestClientSearch_TimesCommitsOfBranchCreationByThatPush(t *testing.T) {
+	// git push -u で c1 と c2 を push してブランチを作り、あとから c3 だけを push した。
+	activity := `[
+	  {"after": "c3", "timestamp": "2026-11-20T02:59:00Z", "activity_type": "push"},
+	  {"after": "c2", "timestamp": "2026-11-20T02:30:00Z", "activity_type": "branch_creation"}
+	]`
+	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: activity}
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(commitTimes(t, got.Items[0]), " "), "02:30 02:30 02:59"; got != want {
+		t.Errorf("commit times = %s, want %s", got, want)
+	}
+}
+
+func TestClientSearch_SkipsPushWhoseHeadIsNotInPR(t *testing.T) {
+	// 02:45 の push の head は、その後の force push で PR から消えたコミット。
+	// この push にはコミットを割り当てず、c2 は c3 と同じ 02:59 の push に含まれたとみなす。
+	activity := `[
+	  {"after": "c3", "timestamp": "2026-11-20T02:59:00Z", "activity_type": "force_push"},
+	  {"after": "gone", "timestamp": "2026-11-20T02:45:00Z", "activity_type": "push"},
+	  {"after": "c1", "timestamp": "2026-11-20T02:30:00Z", "activity_type": "branch_creation"}
+	]`
+	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: activity}
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(commitTimes(t, got.Items[0]), " "), "02:30 02:59 02:59"; got != want {
+		t.Errorf("commit times = %s, want %s", got, want)
+	}
+}
+
 func TestClientSearch_SkipsPushTimesWhenUpdateIsExplained(t *testing.T) {
 	// updatedAt がコメントの時刻と同じなら、更新はコメントで説明がつく。
 	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T02:00:00Z"), activityResponse: pushActivityResponse}
