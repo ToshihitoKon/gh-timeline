@@ -106,6 +106,58 @@ func TestParseResponse_ConvertsEventsInTimeOrder(t *testing.T) {
 	}
 }
 
+func TestParseResponse_StripsControlCharacters(t *testing.T) {
+	const body = `{
+  "data": {
+    "viewer": {"login": "me"},
+    "authored": {"issueCount": 1, "nodes": [
+      {"__typename": "PullRequest", "number": 1, "title": "Fix\u001b]52;c;aGk=\u0007 バグ", "url": "https://github.com/o/r/pull/1",
+       "state": "OPEN", "isDraft": false, "updatedAt": "2026-11-20T03:00:00Z",
+       "author": {"login": "al\u009bice"}, "repository": {"nameWithOwner": "o/r\u007f"},
+       "timelineItems": {"nodes": [
+         {"__typename": "PullRequestCommit", "commit": {"committedDate": "2026-11-20T02:00:00Z", "author": {"name": "Bob\u001b[2J B\r\n", "user": null}}},
+         {"__typename": "ReviewRequestedEvent", "createdAt": "2026-11-20T02:10:00Z", "actor": {"login": "car\u0000ol"}, "requestedReviewer": {"login": "", "name": "team\u001b[31m-a"}},
+         {"__typename": "AssignedEvent", "createdAt": "2026-11-20T02:20:00Z", "actor": {"login": "carol"}, "assignee": {"login": "da\bve"}}
+       ]}}
+    ]},
+    "assigned": {"issueCount": 0, "nodes": []},
+    "reviewRequested": {"issueCount": 0, "nodes": []},
+    "reviewedBy": {"issueCount": 0, "nodes": []}
+  }
+}`
+	got, err := parseResponse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := got.Items[0]
+	if item.Title != "Fix]52;c;aGk= バグ" {
+		t.Errorf("Title = %q, want control characters removed and other characters kept", item.Title)
+	}
+	if item.Repo != "o/r" {
+		t.Errorf("Repo = %q, want o/r", item.Repo)
+	}
+	if item.Author != "alice" {
+		t.Errorf("Author = %q, want alice", item.Author)
+	}
+
+	want := []struct {
+		actor  string
+		target string
+	}{
+		{"Bob[2J B", ""},        // git の author 名
+		{"carol", "team[31m-a"}, // チームへのレビュー依頼
+		{"carol", "dave"},       // アサイン先の login
+	}
+	if len(item.Events) != len(want) {
+		t.Fatalf("len(Events) = %d, want %d: %+v", len(item.Events), len(want), item.Events)
+	}
+	for i, w := range want {
+		if ev := item.Events[i]; ev.Actor != w.actor || ev.Target != w.target {
+			t.Errorf("Events[%d] = {Actor: %q, Target: %q}, want {Actor: %q, Target: %q}", i, ev.Actor, ev.Target, w.actor, w.target)
+		}
+	}
+}
+
 func TestParseResponse_ReturnsGraphQLErrors(t *testing.T) {
 	_, err := parseResponse([]byte(`{"data": null, "errors": [{"message": "boom"}]}`))
 	if err == nil || !strings.Contains(err.Error(), "boom") {

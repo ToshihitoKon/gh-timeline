@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ghostLogin は削除済みアカウントの表示名。GitHub の Web 表示に合わせている。
@@ -159,14 +160,14 @@ func convertItem(raw rawItem) (Item, bool) {
 
 	item := Item{
 		Kind:        kind,
-		Repo:        raw.Repository.NameWithOwner,
+		Repo:        stripControl(raw.Repository.NameWithOwner),
 		Number:      raw.Number,
-		Title:       raw.Title,
+		Title:       stripControl(raw.Title),
 		URL:         raw.URL,
 		State:       raw.State,
 		StateReason: raw.StateReason,
 		IsDraft:     raw.IsDraft,
-		Author:      loginOrGhost(raw.Author),
+		Author:      stripControl(loginOrGhost(raw.Author)),
 		UpdatedAt:   raw.UpdatedAt,
 		headRef:     raw.HeadRefName,
 	}
@@ -175,6 +176,7 @@ func convertItem(raw rawItem) (Item, bool) {
 	}
 	for _, re := range slices.Concat(raw.TimelineItems.Nodes, raw.Reviews.Nodes) {
 		if ev, ok := convertEvent(re); ok {
+			ev.Actor, ev.Target = stripControl(ev.Actor), stripControl(ev.Target)
 			item.Events = append(item.Events, ev)
 		}
 	}
@@ -279,4 +281,15 @@ func loginOrGhost(a *rawActor) string {
 		return ghostLogin
 	}
 	return a.Login
+}
+
+// stripControl は C0 / C1 制御文字と DEL を除く。描画側ではなく取り込む段階で除くのは、
+// TUI と -dump の出力先ごとに除き漏れが出ないようにするため。
+func stripControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
