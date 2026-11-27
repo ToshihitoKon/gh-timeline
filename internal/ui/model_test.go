@@ -488,6 +488,33 @@ func TestModel_FirstFetchErrorThenSuccessIsRead(t *testing.T) {
 	}
 }
 
+func TestModel_PartialErrorsShowInFooterWithResults(t *testing.T) {
+	m := newReadyModel(fakeFetcher{})
+	m.isFetching = true
+	next, _ := m.Update(fetchedMsg{
+		startedAt: time.Now(),
+		since:     time.Now().Add(-time.Hour),
+		result: github.SearchResult{
+			Viewer:        "me",
+			Items:         []github.Item{newItem(1, 1)},
+			PartialErrors: []string{"Resource protected by\norganization SAML enforcement."},
+		},
+	})
+	m = next.(Model)
+	if len(m.batches) != 1 {
+		t.Errorf("batches = %d, want 1 (results kept despite partial errors)", len(m.batches))
+	}
+	if footer := ansi.Strip(m.footer()); !strings.HasPrefix(footer, "some results are missing: Resource protected by organization SAML enforcement.") {
+		t.Errorf("footer = %q, want the partial error on one line", footer)
+	}
+
+	// 次の取得でエラーが無くなれば警告を消す
+	m = applyFetch(t, m)
+	if footer := ansi.Strip(m.footer()); strings.Contains(footer, "missing") {
+		t.Errorf("footer = %q, want no warning after a clean fetch", footer)
+	}
+}
+
 func TestModel_LaterFetchIsUnreadUntilSpace(t *testing.T) {
 	m := applyFetch(t, newReadyModel(fakeFetcher{})) // 初回は更新なし
 	m = applyFetch(t, m, newItem(1, 1))

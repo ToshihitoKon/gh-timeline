@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -102,9 +103,13 @@ type SearchResult struct {
 	// Truncated は、いずれかの検索条件で searchPageSize を超えてヒットし、
 	// 取りこぼしがあることを示す。
 	Truncated bool
+	// PartialErrors は、結果の一部を取得できなかったときの GraphQL のエラーメッセージ（重複を除く）。
+	// SAML SSO を強制する org の PR / issue に gh のトークンが認可されていない場合などに出る。
+	PartialErrors []string
 }
 
 // Runner は gh コマンドを引数付きで実行し、標準出力を返す。テストで差し替える。
+// gh が非ゼロで終わったときも、得られた標準出力はエラーと一緒に返す。
 type Runner func(ctx context.Context, args ...string) ([]byte, error)
 
 // ExecGH は実際に gh コマンドを実行する Runner。
@@ -116,13 +121,20 @@ func ExecGH(ctx context.Context, args ...string) ([]byte, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
-	if err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return nil, fmt.Errorf("gh %s: %w: %s", args[0], err, msg)
-		}
-		return nil, fmt.Errorf("gh %s: %w", args[0], err)
+	if err == nil {
+		return out, nil
 	}
-	return out, nil
+	// 打ち切られた gh の終了理由は "signal: killed" となり、タイムアウトだと分からない。
+	// 途中までの標準出力は使えないため返さない。
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil, fmt.Errorf("gh %s: timed out: %w", args[0], ctx.Err())
+	}
+	// gh api graphql は、応答に errors があると data があっても非ゼロで終わるが、応答は標準出力に出す。
+	// 部分的な結果を呼び出し側で使えるよう、標準出力も返す。
+	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		return out, fmt.Errorf("gh %s: %w: %s", args[0], err, msg)
+	}
+	return out, fmt.Errorf("gh %s: %w", args[0], err)
 }
 
 // Client は自分が関わる PR / issue を検索する。
@@ -147,17 +159,19 @@ func NewClient(run Runner, includeTeamReviews bool) *Client {
 }
 
 // Search は since 以降に更新された、自分が関わる PR / issue を取得する。
+// gh が失敗しても、応答に data があれば部分的な結果として返す。
 func (c *Client) Search(ctx context.Context, since time.Time) (SearchResult, error) {
 	args := []string{"api", "graphql", "-f", "query=" + searchQuery, "-F", fmt.Sprintf("first=%d", searchPageSize)}
 	for name, q := range searchQueries(since, c.includeTeamReviews) {
 		args = append(args, "-f", name+"="+q)
 	}
-	out, err := c.run(ctx, args...)
-	if err != nil {
-		return SearchResult{}, err
-	}
+	out, runErr := c.run(ctx, args...)
 	result, err := parseResponse(out)
 	if err != nil {
+		// gh が失敗していれば、応答を読めなかった理由は gh の stderr の方がよく表している。
+		if runErr != nil {
+			return SearchResult{}, runErr
+		}
 		return SearchResult{}, err
 	}
 	c.retimeCommitsByPush(ctx, result.Items)

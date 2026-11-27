@@ -15,7 +15,8 @@ import (
 const ghostLogin = "ghost"
 
 type response struct {
-	Data struct {
+	// Data は、エラーで結果を何も返せないときに null になる。
+	Data *struct {
 		Viewer          struct{ Login string } `json:"viewer"`
 		Authored        searchConnection       `json:"authored"`
 		Assigned        searchConnection       `json:"assigned"`
@@ -97,15 +98,19 @@ func parseResponse(body []byte) (SearchResult, error) {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return SearchResult{}, fmt.Errorf("parse GraphQL response: %w", err)
 	}
-	if len(resp.Errors) > 0 {
-		msgs := make([]string, len(resp.Errors))
-		for i, e := range resp.Errors {
-			msgs[i] = e.Message
+	// 権限の無い PR / issue は errors に載り、該当のノードは空になる。
+	// 1 件のために全体を失敗させず、data があれば残りの結果を使う。
+	var msgs []string
+	for _, e := range resp.Errors {
+		if !slices.Contains(msgs, e.Message) {
+			msgs = append(msgs, e.Message)
 		}
+	}
+	if resp.Data == nil {
 		return SearchResult{}, errors.New("GraphQL error: " + strings.Join(msgs, "; "))
 	}
 
-	result := SearchResult{Viewer: resp.Data.Viewer.Login}
+	result := SearchResult{Viewer: resp.Data.Viewer.Login, PartialErrors: msgs}
 	byKey := map[string]*Item{}
 	var order []string
 	for _, conn := range []struct {
