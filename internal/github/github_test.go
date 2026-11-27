@@ -23,15 +23,15 @@ const sampleResponse = `{
          {"__typename": "PullRequestCommit", "commit": {"committedDate": "2026-11-20T02:40:00Z", "author": {"name": "Bob B", "user": null}}}
        ]},
        "reviews": {"nodes": [
-         {"__typename": "PullRequestReview", "submittedAt": "2026-11-20T02:30:00Z", "createdAt": "2026-11-20T02:00:00Z", "state": "APPROVED", "body": "", "author": {"login": "alice"},
+         {"__typename": "PullRequestReview", "submittedAt": "2026-11-20T02:30:00Z", "state": "APPROVED", "body": "", "author": {"login": "alice"},
           "comments": {"totalCount": 0, "nodes": []}},
-         {"__typename": "PullRequestReview", "submittedAt": "2026-11-20T02:45:00Z", "createdAt": "2026-11-20T02:45:00Z", "state": "COMMENTED", "body": "", "author": {"login": "dave"},
+         {"__typename": "PullRequestReview", "submittedAt": "2026-11-20T02:45:00Z", "state": "COMMENTED", "body": "", "author": {"login": "dave"},
           "comments": {"totalCount": 1, "nodes": [{"replyTo": {"id": "c1"}}]}},
-         {"__typename": "PullRequestReview", "submittedAt": null, "createdAt": "2026-11-20T02:50:00Z", "state": "PENDING", "body": "", "author": {"login": "me"},
+         {"__typename": "PullRequestReview", "submittedAt": null, "state": "PENDING", "body": "", "author": {"login": "me"},
           "comments": {"totalCount": 1, "nodes": [{"replyTo": {"id": "c1"}}]}},
-         {"__typename": "PullRequestReview", "submittedAt": "2026-11-20T02:51:00Z", "createdAt": "2026-11-20T02:51:00Z", "state": "COMMENTED", "body": "", "author": {"login": "erin"},
+         {"__typename": "PullRequestReview", "submittedAt": "2026-11-20T02:51:00Z", "state": "COMMENTED", "body": "", "author": {"login": "erin"},
           "comments": {"totalCount": 2, "nodes": [{"replyTo": {"id": "c1"}}, {"replyTo": null}]}},
-         {"__typename": "PullRequestReview", "submittedAt": "2026-11-20T02:52:00Z", "createdAt": "2026-11-20T02:52:00Z", "state": "COMMENTED", "body": "see inline", "author": {"login": "frank"},
+         {"__typename": "PullRequestReview", "submittedAt": "2026-11-20T02:52:00Z", "state": "COMMENTED", "body": "see inline", "author": {"login": "frank"},
           "comments": {"totalCount": 1, "nodes": [{"replyTo": {"id": "c1"}}]}}
        ]}}
     ]},
@@ -40,7 +40,7 @@ const sampleResponse = `{
        "state": "CLOSED", "stateReason": "COMPLETED", "updatedAt": "2026-11-20T04:00:00Z",
        "author": {"login": "carol"}, "repository": {"nameWithOwner": "o/r"},
        "timelineItems": {"nodes": [
-         {"__typename": "AssignedEvent", "createdAt": "2026-11-20T03:30:00Z", "actor": {"login": "carol"}, "assignee": {"__typename": "User", "login": "me"}},
+         {"__typename": "AssignedEvent", "createdAt": "2026-11-20T03:30:00Z", "actor": {"login": "carol"}, "assignee": {"login": "me"}},
          {"__typename": "ClosedEvent", "createdAt": "2026-11-20T03:50:00Z", "actor": {"login": "carol"}}
        ]}}
     ]},
@@ -341,6 +341,24 @@ func TestSearchQueries_ReviewRequestScope(t *testing.T) {
 	team := searchQueries(since, true)
 	if !strings.HasPrefix(team["reviewRequested"], "is:pr review-requested:@me ") {
 		t.Errorf("team reviewRequested = %q, want review-requested", team["reviewRequested"])
+	}
+}
+
+// comments は親のノード数の分だけ取得回数としてコストに数えられるため、reviews の下でだけ取る。
+func TestSearchQuery_FetchesCommentsOnlyInReviewFragment(t *testing.T) {
+	foundInReview := false
+	for _, part := range strings.Split(searchQuery, "\nfragment ") {
+		hasComments := strings.Contains(part, "comments(")
+		if strings.HasPrefix(part, "review on PullRequestReview") {
+			foundInReview = hasComments
+			continue
+		}
+		if hasComments {
+			t.Errorf("comments is fetched outside the review fragment:\n%s", part)
+		}
+	}
+	if !foundInReview {
+		t.Error("review fragment does not fetch comments")
 	}
 }
 

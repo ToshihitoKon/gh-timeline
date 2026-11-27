@@ -21,13 +21,19 @@ fragment results on SearchResultItemConnection {
       repository { nameWithOwner }
       headRefName
       headRepository { nameWithOwner }
+      # last: 10 は、ポーリング間隔の間に 1 つの PR / issue で起きる操作がふつう 10 件に収まるため。
+      # 超えた分は古いものから表示されない。
       timelineItems(last: 10, itemTypes: [ISSUE_COMMENT, PULL_REQUEST_COMMIT, MERGED_EVENT, CLOSED_EVENT, REOPENED_EVENT, REVIEW_REQUESTED_EVENT, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, HEAD_REF_FORCE_PUSHED_EVENT, ASSIGNED_EVENT]) {
         nodes { ...timelineItem }
       }
       # レビューを timelineItems の PULL_REQUEST_REVIEW で取らないのは、既存スレッドへの返信で
       # 作られるレビューが timelineItems に含まれず、updatedAt だけが進んで取りこぼすため。
+      # latestReviews で補わないのは、reviews が提出した順に並び、下書きのまま長く置いてから
+      # 提出したレビューも末尾に来るため。latestReviews は人ごとに最新の 1 件しか返さない。
+      # last: 10 で止めているのは、件数がそのまま各レビューの comments を取る回数としてコストに数えられ、
+      # 1 件増やすと 1 回のポーリングで 4 ポイント増えるため。
       reviews(last: 10) {
-        nodes { ...timelineItem }
+        nodes { ...review }
       }
     }
     ... on Issue {
@@ -39,6 +45,7 @@ fragment results on SearchResultItemConnection {
       updatedAt
       author { login }
       repository { nameWithOwner }
+      # last: 10 は PR の timelineItems と同じ理由。
       timelineItems(last: 10, itemTypes: [ISSUE_COMMENT, CLOSED_EVENT, REOPENED_EVENT, ASSIGNED_EVENT]) {
         nodes { ...timelineItem }
       }
@@ -50,16 +57,28 @@ fragment timelineItem on Node {
   __typename
   id
   ... on IssueComment { createdAt author { login } }
-  # comments を 10 件までにしているのは、返信だけのレビューはふつう 1 件で、
-  # 返信かどうかの判定に全件は要らないため。10 件を超えるレビューは返信として扱わない。
-  ... on PullRequestReview { submittedAt createdAt state body author { login } comments(first: 10) { totalCount nodes { replyTo { id } } } }
   ... on PullRequestCommit { commit { oid committedDate author { name user { login } } } }
   ... on MergedEvent { createdAt actor { login } }
   ... on ClosedEvent { createdAt actor { login } }
   ... on ReopenedEvent { createdAt actor { login } }
-  ... on ReviewRequestedEvent { createdAt actor { login } requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { name } } }
+  ... on ReviewRequestedEvent { createdAt actor { login } requestedReviewer { ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { name } } }
   ... on ReadyForReviewEvent { createdAt actor { login } }
   ... on ConvertToDraftEvent { createdAt actor { login } }
   ... on HeadRefForcePushedEvent { createdAt actor { login } }
-  ... on AssignedEvent { createdAt actor { login } assignee { __typename ... on User { login } } }
+  ... on AssignedEvent { createdAt actor { login } assignee { ... on User { login } } }
+}
+
+# レビューを timelineItem と別のフラグメントにしているのは、timelineItem に comments を置くと
+# timelineItems の下でも各ノードの comments を取る回数としてコストに数えられるため。
+# itemTypes にレビューを含めていなくても数えられ、1 回のポーリングで 40 ポイント多くかかる。
+# comments を 10 件までにしているのは、返信だけのレビューはふつう 1 件で、
+# 返信かどうかの判定に全件は要らないため。10 件を超えるレビューは返信として扱わない。
+fragment review on PullRequestReview {
+  __typename
+  id
+  submittedAt
+  state
+  body
+  author { login }
+  comments(first: 10) { totalCount nodes { replyTo { id } } }
 }

@@ -34,9 +34,10 @@ func resolveVersion() string {
 	return version
 }
 
-// minInterval はポーリング間隔の下限。GraphQL の検索は 1 回で 4 クエリ分を消費し、
-// 検索 API には分単位のレート制限もあるため、極端に短い間隔を指定できないようにする。
-const minInterval = 30 * time.Second
+// minInterval はポーリング間隔の下限。1 回のポーリングの GraphQL のコストは 48 ポイントで、
+// 30 秒間隔では 1 時間に 5,760 ポイントとなり、上限の 5,000 ポイントを超えて同じトークンを使う
+// 他の gh コマンドまで止まる。1 分間隔なら 2,880 ポイントで、他の gh コマンドの分が残る。
+const minInterval = time.Minute
 
 func main() {
 	interval := flag.Duration("interval", 5*time.Minute, "polling interval")

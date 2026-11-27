@@ -30,6 +30,13 @@ func TestCheckFlags_RejectsIntervalBelowMinimum(t *testing.T) {
 	}
 }
 
+func TestCheckFlags_RejectsIntervalUnderOneMinute(t *testing.T) {
+	err := checkFlags(30*time.Second, 30*time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "at least 1m0s") {
+		t.Fatalf("checkFlags(30s) = %v, want an error saying at least 1m0s", err)
+	}
+}
+
 func TestCheckFlags_RejectsNegativeSince(t *testing.T) {
 	err := checkFlags(5*time.Minute, -time.Minute)
 	if err == nil || !strings.Contains(err.Error(), "-since") {
