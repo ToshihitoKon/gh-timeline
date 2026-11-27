@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,36 @@ import (
 	"github.com/ToshihitoKon/gh-timeline/internal/github"
 	"github.com/ToshihitoKon/gh-timeline/internal/timeline"
 )
+
+func buildInfoWithVersion(v string) *debug.BuildInfo {
+	return &debug.BuildInfo{Main: debug.Module{Path: "github.com/ToshihitoKon/gh-timeline", Version: v}}
+}
+
+func TestPickVersion_ReleaseAndGoInstallPrintTheSame(t *testing.T) {
+	release := pickVersion("v0.4.1", nil)
+	goInstall := pickVersion("dev", buildInfoWithVersion("v0.4.1"))
+	if release != "v0.4.1" || goInstall != "v0.4.1" {
+		t.Fatalf("release = %q, go install = %q, want both v0.4.1", release, goInstall)
+	}
+}
+
+func TestPickVersion_PrefersEmbeddedVersion(t *testing.T) {
+	if got := pickVersion("v0.4.1", buildInfoWithVersion("v0.3.0")); got != "v0.4.1" {
+		t.Fatalf("pickVersion() = %q, want v0.4.1", got)
+	}
+}
+
+func TestPickVersion_FallsBackToDev(t *testing.T) {
+	for name, info := range map[string]*debug.BuildInfo{
+		"no build info":  nil,
+		"empty version":  buildInfoWithVersion(""),
+		"local checkout": buildInfoWithVersion("(devel)"),
+	} {
+		if got := pickVersion("dev", info); got != "dev" {
+			t.Errorf("%s: pickVersion() = %q, want dev", name, got)
+		}
+	}
+}
 
 func TestCheckFlags_AcceptsDefaults(t *testing.T) {
 	if err := checkFlags(5*time.Minute, 30*time.Minute); err != nil {

@@ -19,19 +19,26 @@ import (
 	"github.com/ToshihitoKon/gh-timeline/internal/ui"
 )
 
-// version は GoReleaser がビルド時に -ldflags "-X main.version=..." で埋め込む。
+// version は GoReleaser がビルド時に -ldflags "-X main.version=..." でタグ名（v0.1.0 など）を埋め込む。
 var version = "dev"
 
-// resolveVersion は表示するバージョンを返す。go install でビルドした場合は ldflags が
-// 渡らず "dev" のままになるため、Go が埋め込むモジュールのバージョン（v0.1.0 など）を使う。
+// resolveVersion は表示するバージョンを返す。
 func resolveVersion() string {
-	if version != "dev" {
-		return version
+	info, _ := debug.ReadBuildInfo()
+	return pickVersion(version, info)
+}
+
+// pickVersion は ldflags で埋め込まれた版を優先する。go install でビルドした場合は ldflags が
+// 渡らず "dev" のままになるため、Go が埋め込むモジュールのバージョン（v0.1.0 など）を使う。
+// info は build info を読めなかったとき nil。
+func pickVersion(embedded string, info *debug.BuildInfo) string {
+	if embedded != "dev" {
+		return embedded
 	}
-	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+	if info != nil && info.Main.Version != "" && info.Main.Version != "(devel)" {
 		return info.Main.Version
 	}
-	return version
+	return embedded
 }
 
 // minInterval はポーリング間隔の下限。1 回のポーリングの GraphQL のコストは 48 ポイントで、

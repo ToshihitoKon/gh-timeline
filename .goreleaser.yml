@@ -18,7 +18,8 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X main.version={{ .Version }}
+      # {{ .Version }} は先頭の v を落とすため、go install で入れたときの表記（v0.4.1）と揃うタグ名を使う。
+      - -s -w -X main.version={{ .Tag }}
 archives:
   # gh extension install は Release から "gh-timeline-<os>-<arch>" で終わる名前のファイルを探し、
   # そのまま実行ファイルとして置く。アーカイブに固めると見つけられないため、バイナリのまま載せる。
