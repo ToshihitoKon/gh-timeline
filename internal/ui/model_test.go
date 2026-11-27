@@ -64,20 +64,21 @@ func TestRenderBatch_GroupsEventsByItemNewestFirst(t *testing.T) {
 }
 
 func TestRenderBatch_CollapsesNoisyEvents(t *testing.T) {
-	request := func(target string) github.Event {
-		e := ev(github.EventReviewRequested, "alice", 13, 0)
+	withTarget := func(e github.Event, target string) github.Event {
 		e.Target = target
 		return e
 	}
+	request := ev(github.EventReviewRequested, "alice", 13, 0)
+	assign := ev(github.EventAssigned, "alice", 13, 1)
 	b := timeline.Batch{
 		CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
 		Entries: []timeline.Entry{entry(
-			request("bob"),
-			request("carol"),
+			withTarget(request, "bob"),
+			withTarget(request, "carol"),
+			withTarget(assign, "bob"),
+			withTarget(assign, "carol"),
 			ev(github.EventCommented, "bot", 13, 10),
 			ev(github.EventCommented, "bot", 13, 11),
-			ev(github.EventMerged, "bot", 13, 12),
-			ev(github.EventClosed, "bot", 13, 12),
 			ev(github.EventReplied, "dave", 13, 20),
 			ev(github.EventReplied, "dave", 13, 21),
 		)},
@@ -87,8 +88,8 @@ func TestRenderBatch_CollapsesNoisyEvents(t *testing.T) {
 		"--- 14:05 ---",
 		"o/r PR#7 Add feature",
 		"  13:21 replied (2) dave",
-		"  13:12 merged bot",
 		"  13:11 commented (2) bot",
+		"  13:01 assigned alice → bob, carol",
 		"  13:00 review requested alice → bob, carol",
 	}, "\n")
 	if got != want {
@@ -560,6 +561,41 @@ func TestModel_SpaceWithNoBatches(t *testing.T) {
 func TestModel_FooterShowsMarkRead(t *testing.T) {
 	if got := ansi.Strip(newReadyModel(fakeFetcher{}).footer()); !strings.Contains(got, "space: mark read") {
 		t.Errorf("footer = %q, want it to mention space: mark read", got)
+	}
+}
+
+func TestModel_FetchErrorKeepsLastSuccessfulCheckTime(t *testing.T) {
+	m := newReadyModel(fakeFetcher{})
+	m.isFetching = true
+	next, _ := m.Update(fetchedMsg{
+		startedAt: time.Date(2026, 11, 20, 11, 45, 0, 0, time.Local),
+		since:     time.Date(2026, 11, 20, 10, 45, 0, 0, time.Local),
+		result:    github.SearchResult{Viewer: "me"},
+	})
+	m = next.(Model)
+	m.isFetching = true
+	next, _ = m.Update(fetchedMsg{startedAt: time.Date(2026, 11, 20, 11, 50, 0, 0, time.Local), err: errors.New("boom")})
+	m = next.(Model)
+	if got := ansi.Strip(m.statusLine()); !strings.HasPrefix(got, "checked 11:45 · next ") {
+		t.Errorf("status line = %q, want the time of the last successful check", got)
+	}
+}
+
+func TestModel_FirstFetchErrorShowsOnlyNextPoll(t *testing.T) {
+	m := newReadyModel(fakeFetcher{})
+	m.isFetching = true
+	next, _ := m.Update(fetchedMsg{startedAt: time.Now(), err: errors.New("boom")})
+	m = next.(Model)
+	if got := ansi.Strip(m.statusLine()); strings.Contains(got, "checked") || !strings.HasPrefix(got, "next ") {
+		t.Errorf("status line = %q, want only the next poll before any successful check", got)
+	}
+}
+
+func TestModel_ViewTruncatesTitleToWidth(t *testing.T) {
+	next, _ := newReadyModel(fakeFetcher{}).Update(tea.WindowSizeMsg{Width: 10, Height: 20})
+	title := strings.Split(next.(Model).View(), "\n")[0]
+	if w := ansi.StringWidth(title); w > 10 {
+		t.Errorf("title %q width = %d, want <= 10", ansi.Strip(title), w)
 	}
 }
 

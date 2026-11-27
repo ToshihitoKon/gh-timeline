@@ -188,7 +188,24 @@ func convertItem(raw rawItem) (Item, bool) {
 	sort.SliceStable(item.Events, func(i, j int) bool {
 		return item.Events[i].At.Before(item.Events[j].At)
 	})
+	item.Events = dropClosedByMerge(item.Events)
 	return item, true
+}
+
+// dropClosedByMerge は、マージ時に GitHub が MergedEvent と同時に記録する ClosedEvent を除く。
+// "closed" まで出すと、マージとは別に閉じられたように読めるため。
+// 並び順で「merged の直後の closed」を探さず時刻で照らし合わせるのは、同時刻の 2 件の順序が決まっていないため。
+// マージ済みの PR の closed をすべて除かないのは、マージ前に閉じて開き直した回の closed を残すため。
+func dropClosedByMerge(events []Event) []Event {
+	var mergedAts []time.Time
+	for _, ev := range events {
+		if ev.Type == EventMerged {
+			mergedAts = append(mergedAts, ev.At)
+		}
+	}
+	return slices.DeleteFunc(events, func(ev Event) bool {
+		return ev.Type == EventClosed && slices.ContainsFunc(mergedAts, ev.At.Equal)
+	})
 }
 
 func convertEvent(raw rawEvent) (Event, bool) {

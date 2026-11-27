@@ -170,9 +170,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case fetchedMsg:
 		m.isFetching = false
-		m.lastCheckedAt = msg.startedAt
 		m.lastErr = msg.err
 		if msg.err == nil {
+			m.lastCheckedAt = msg.startedAt
 			m.viewer = msg.result.Viewer
 			m.isTruncated = msg.result.Truncated
 			m.partialErrors = msg.result.PartialErrors
@@ -249,7 +249,7 @@ func (m Model) View() string {
 		viewer = "@" + m.viewer
 	}
 	title := lipgloss.NewStyle().Bold(true).Render("gh-timeline — " + viewer)
-	return title + "\n" + m.fitWidth(m.statusLine()) + "\n" + m.viewport.View() + "\n" + m.fitWidth(m.footer())
+	return m.fitWidth(title) + "\n" + m.fitWidth(m.statusLine()) + "\n" + m.viewport.View() + "\n" + m.fitWidth(m.footer())
 }
 
 // fitWidth は折り返しで viewport の高さの計算がずれないよう、行を端末幅で切り詰める。
@@ -261,11 +261,14 @@ func (m Model) statusLine() string {
 	if m.isFetching {
 		return m.spinner.View() + faintStyle.Render(" checking...")
 	}
-	if m.lastCheckedAt.IsZero() {
+	if m.nextPollAt.IsZero() {
 		return ""
 	}
-	text := fmt.Sprintf("checked %s · next %s · every %s",
-		m.lastCheckedAt.Format("15:04"), m.nextPollAt.Format("15:04"), m.interval)
+	text := fmt.Sprintf("next %s · every %s", m.nextPollAt.Format("15:04"), m.interval)
+	// checked には成功した回の時刻だけを出す。失敗した回の時刻を出すと、取得できたように読めるため。
+	if !m.lastCheckedAt.IsZero() {
+		text = fmt.Sprintf("checked %s · %s", m.lastCheckedAt.Format("15:04"), text)
+	}
 	return faintStyle.Render(text)
 }
 
