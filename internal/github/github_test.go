@@ -17,7 +17,7 @@ const sampleResponse = `{
     "authored": {"issueCount": 1, "nodes": [
       {"__typename": "PullRequest", "number": 1, "title": "Add feature", "url": "https://github.com/o/r/pull/1",
        "state": "OPEN", "isDraft": false, "updatedAt": "2026-11-20T03:00:00Z",
-       "author": {"login": "me"}, "repository": {"nameWithOwner": "o/r"},
+       "repository": {"nameWithOwner": "o/r"},
        "timelineItems": {"nodes": [
          {"__typename": "IssueComment", "createdAt": "2026-11-20T02:10:00Z", "author": null},
          {"__typename": "PullRequestCommit", "commit": {"committedDate": "2026-11-20T02:40:00Z", "author": {"name": "Bob B", "user": null}}}
@@ -38,7 +38,7 @@ const sampleResponse = `{
     "assigned": {"issueCount": 1, "nodes": [
       {"__typename": "Issue", "number": 2, "title": "Bug", "url": "https://github.com/o/r/issues/2",
        "state": "CLOSED", "stateReason": "COMPLETED", "updatedAt": "2026-11-20T04:00:00Z",
-       "author": {"login": "carol"}, "repository": {"nameWithOwner": "o/r"},
+       "repository": {"nameWithOwner": "o/r"},
        "timelineItems": {"nodes": [
          {"__typename": "AssignedEvent", "createdAt": "2026-11-20T03:30:00Z", "actor": {"login": "carol"}, "assignee": {"login": "me"}},
          {"__typename": "ClosedEvent", "createdAt": "2026-11-20T03:50:00Z", "actor": {"login": "carol"}}
@@ -48,7 +48,7 @@ const sampleResponse = `{
     "reviewedBy": {"issueCount": 150, "nodes": [
       {"__typename": "PullRequest", "number": 1, "title": "Add feature", "url": "https://github.com/o/r/pull/1",
        "state": "OPEN", "isDraft": false, "updatedAt": "2026-11-20T03:00:00Z",
-       "author": {"login": "me"}, "repository": {"nameWithOwner": "o/r"},
+       "repository": {"nameWithOwner": "o/r"},
        "timelineItems": {"nodes": []}},
       {}
     ]}
@@ -85,7 +85,7 @@ func TestParseResponse_SetsEventIDsWithCommitOID(t *testing.T) {
 	}
 }
 
-func TestParseResponse_MergesRolesAndSortsByUpdatedAt(t *testing.T) {
+func TestParseResponse_DropsDuplicatesAndSortsByUpdatedAt(t *testing.T) {
 	got, err := parseResponse([]byte(sampleResponse))
 	if err != nil {
 		t.Fatal(err)
@@ -101,9 +101,6 @@ func TestParseResponse_MergesRolesAndSortsByUpdatedAt(t *testing.T) {
 	}
 	if got.Items[0].Key() != "o/r#2" || got.Items[1].Key() != "o/r#1" {
 		t.Errorf("order = %s, %s; want o/r#2 (newer) first", got.Items[0].Key(), got.Items[1].Key())
-	}
-	if pr := got.Items[1]; pr.Roles != RoleAuthor|RoleReviewed {
-		t.Errorf("PR roles = %b, want author|reviewed", pr.Roles)
 	}
 }
 
@@ -148,7 +145,7 @@ func TestParseResponse_DropsClosedRecordedWithMerge(t *testing.T) {
     "authored": {"issueCount": 1, "nodes": [
       {"__typename": "PullRequest", "number": 1, "title": "Add feature", "url": "https://github.com/o/r/pull/1",
        "state": "MERGED", "isDraft": false, "updatedAt": "2026-11-20T03:00:00Z",
-       "author": {"login": "me"}, "repository": {"nameWithOwner": "o/r"},
+       "repository": {"nameWithOwner": "o/r"},
        "timelineItems": {"nodes": [
          {"__typename": "ClosedEvent", "createdAt": "2026-11-20T01:00:00Z", "actor": {"login": "alice"}},
          {"__typename": "ReopenedEvent", "createdAt": "2026-11-20T01:10:00Z", "actor": {"login": "alice"}},
@@ -181,7 +178,7 @@ func TestParseResponse_StripsControlCharacters(t *testing.T) {
     "authored": {"issueCount": 1, "nodes": [
       {"__typename": "PullRequest", "number": 1, "title": "Fix\u001b]52;c;aGk=\u0007 バグ", "url": "https://github.com/o/r/pull/1",
        "state": "OPEN", "isDraft": false, "updatedAt": "2026-11-20T03:00:00Z",
-       "author": {"login": "al\u009bice"}, "repository": {"nameWithOwner": "o/r\u007f"},
+       "repository": {"nameWithOwner": "o/r\u007f"},
        "timelineItems": {"nodes": [
          {"__typename": "PullRequestCommit", "commit": {"committedDate": "2026-11-20T02:00:00Z", "author": {"name": "Bob\u001b[2J B\r\n", "user": null}}},
          {"__typename": "ReviewRequestedEvent", "createdAt": "2026-11-20T02:10:00Z", "actor": {"login": "car\u0000ol"}, "requestedReviewer": {"login": "", "name": "team\u001b[31m-a"}},
@@ -203,9 +200,6 @@ func TestParseResponse_StripsControlCharacters(t *testing.T) {
 	}
 	if item.Repo != "o/r" {
 		t.Errorf("Repo = %q, want o/r", item.Repo)
-	}
-	if item.Author != "alice" {
-		t.Errorf("Author = %q, want alice", item.Author)
 	}
 
 	want := []struct {
@@ -240,7 +234,7 @@ const partialResponse = `{
     "authored": {"issueCount": 3, "nodes": [
       {"__typename": "Issue", "number": 2, "title": "Bug", "url": "https://github.com/o/r/issues/2",
        "state": "OPEN", "updatedAt": "2026-11-20T04:00:00Z",
-       "author": {"login": "me"}, "repository": {"nameWithOwner": "o/r"},
+       "repository": {"nameWithOwner": "o/r"},
        "timelineItems": {"nodes": []}},
       null,
       null

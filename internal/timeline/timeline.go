@@ -2,7 +2,7 @@
 package timeline
 
 import (
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/ToshihitoKon/gh-timeline/internal/github"
@@ -120,9 +120,7 @@ func (t *Tracker) Apply(startedAt time.Time, items []github.Item) Batch {
 			batch.Entries = append(batch.Entries, entry)
 		}
 	}
-	sort.SliceStable(batch.Entries, func(i, j int) bool {
-		return batch.Entries[i].shownAt().After(batch.Entries[j].shownAt())
-	})
+	slices.SortStableFunc(batch.Entries, func(a, b Entry) int { return b.shownAt().Compare(a.shownAt()) })
 	t.forgetBefore(since.Add(-seenRetention))
 	t.lastStartedAt = startedAt
 	return batch

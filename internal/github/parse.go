@@ -1,11 +1,11 @@
 package github
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -46,7 +46,6 @@ type rawItem struct {
 	StateReason string    `json:"stateReason"`
 	IsDraft     bool      `json:"isDraft"`
 	UpdatedAt   time.Time `json:"updatedAt"`
-	Author      *rawActor `json:"author"`
 	Repository  struct {
 		NameWithOwner string `json:"nameWithOwner"`
 	} `json:"repository"`
@@ -112,42 +111,25 @@ func parseResponse(body []byte) (SearchResult, error) {
 	}
 
 	result := SearchResult{Viewer: resp.Data.Viewer.Login, PartialErrors: msgs}
-	byKey := map[string]*Item{}
-	var order []string
-	for _, conn := range []struct {
-		role Role
-		conn searchConnection
-	}{
-		{RoleAuthor, resp.Data.Authored},
-		{RoleAssignee, resp.Data.Assigned},
-		{RoleReviewRequested, resp.Data.ReviewRequested},
-		{RoleReviewed, resp.Data.ReviewedBy},
-	} {
-		if conn.conn.IssueCount > len(conn.conn.Nodes) {
+	seenKeys := map[string]bool{}
+	for _, conn := range []searchConnection{resp.Data.Authored, resp.Data.Assigned, resp.Data.ReviewRequested, resp.Data.ReviewedBy} {
+		if conn.IssueCount > len(conn.Nodes) {
 			result.Truncated = true
 		}
-		for _, raw := range conn.conn.Nodes {
+		for _, raw := range conn.Nodes {
 			item, ok := convertItem(raw)
 			if !ok {
 				continue
 			}
 			key := item.Key()
-			if existing, found := byKey[key]; found {
-				existing.Roles |= conn.role
+			if seenKeys[key] {
 				continue
 			}
-			item.Roles = conn.role
-			byKey[key] = &item
-			order = append(order, key)
+			seenKeys[key] = true
+			result.Items = append(result.Items, item)
 		}
 	}
-
-	for _, key := range order {
-		result.Items = append(result.Items, *byKey[key])
-	}
-	sort.SliceStable(result.Items, func(i, j int) bool {
-		return result.Items[i].UpdatedAt.After(result.Items[j].UpdatedAt)
-	})
+	slices.SortStableFunc(result.Items, func(a, b Item) int { return b.UpdatedAt.Compare(a.UpdatedAt) })
 	return result, nil
 }
 
@@ -173,7 +155,6 @@ func convertItem(raw rawItem) (Item, bool) {
 		State:       raw.State,
 		StateReason: raw.StateReason,
 		IsDraft:     raw.IsDraft,
-		Author:      stripControl(loginOrGhost(raw.Author)),
 		UpdatedAt:   raw.UpdatedAt,
 		headRef:     raw.HeadRefName,
 	}
@@ -186,11 +167,14 @@ func convertItem(raw rawItem) (Item, bool) {
 			item.Events = append(item.Events, ev)
 		}
 	}
-	sort.SliceStable(item.Events, func(i, j int) bool {
-		return item.Events[i].At.Before(item.Events[j].At)
-	})
+	sortByTime(item.Events)
 	item.Events = dropClosedByMerge(item.Events)
 	return item, true
+}
+
+// sortByTime はイベントを古い順に並べる。同じ時刻のイベントは元の並びを保つ。
+func sortByTime(events []Event) {
+	slices.SortStableFunc(events, func(a, b Event) int { return a.At.Compare(b.At) })
 }
 
 // dropClosedByMerge は、マージ時に GitHub が MergedEvent と同時に記録する ClosedEvent を除く。
@@ -288,21 +272,20 @@ func actorEvent(t EventType, raw rawEvent) Event {
 // 誰のコミットか分かるよう、login が無ければ git の author 名を使う。
 func commitActor(raw rawEvent) string {
 	a := raw.Commit.Author
-	switch {
-	case a == nil:
-		return ghostLogin
-	case a.User != nil && a.User.Login != "":
-		return a.User.Login
-	case a.Name != "":
-		return a.Name
-	default:
+	if a == nil {
 		return ghostLogin
 	}
+	return cmp.Or(loginOf(a.User), a.Name, ghostLogin)
 }
 
 func loginOrGhost(a *rawActor) string {
-	if a == nil || a.Login == "" {
-		return ghostLogin
+	return cmp.Or(loginOf(a), ghostLogin)
+}
+
+// loginOf は a の login を返す。a が nil なら空文字列。
+func loginOf(a *rawActor) string {
+	if a == nil {
+		return ""
 	}
 	return a.Login
 }

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
-	"sort"
 	"time"
 )
 
@@ -60,7 +59,7 @@ func fetchPushes(ctx context.Context, run Runner, repo, ref string) ([]push, err
 			pushes = append(pushes, push{After: a.After, At: a.Timestamp})
 		}
 	}
-	sort.SliceStable(pushes, func(i, j int) bool { return pushes[i].At.Before(pushes[j].At) })
+	slices.SortStableFunc(pushes, func(a, b push) int { return a.At.Compare(b.At) })
 	return pushes, nil
 }
 
@@ -87,5 +86,5 @@ func applyPushTimes(item *Item, pushes []push) {
 		}
 		next = head + 1
 	}
-	sort.SliceStable(item.Events, func(i, j int) bool { return item.Events[i].At.Before(item.Events[j].At) })
+	sortByTime(item.Events)
 }

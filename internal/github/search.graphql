@@ -17,7 +17,6 @@ fragment results on SearchResultItemConnection {
       state
       isDraft
       updatedAt
-      author { login }
       repository { nameWithOwner }
       headRefName
       headRepository { nameWithOwner }
@@ -43,7 +42,6 @@ fragment results on SearchResultItemConnection {
       state
       stateReason
       updatedAt
-      author { login }
       repository { nameWithOwner }
       # last: 10 は PR の timelineItems と同じ理由。
       timelineItems(last: 10, itemTypes: [ISSUE_COMMENT, CLOSED_EVENT, REOPENED_EVENT, ASSIGNED_EVENT]) {

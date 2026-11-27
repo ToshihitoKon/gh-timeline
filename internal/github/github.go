@@ -18,11 +18,11 @@ import (
 //go:embed search.graphql
 var searchQuery string
 
-// searchPageSize は 1 つの検索条件で取得する件数。GitHub の検索 API が
+// SearchPageSize は 1 つの検索条件で取得する件数。GitHub の検索 API が
 // 1 ページで返せる上限の 100 にしている。ページングしないのは、ポーリング間隔
 // （既定 5 分）の間に 100 件を超えて更新されることは想定しにくく、超えた場合も
 // SearchResult.Truncated で利用者に知らせれば足りるため。
-const searchPageSize = 100
+const SearchPageSize = 100
 
 // Kind は PR か issue かの区別。
 type Kind int
@@ -30,16 +30,6 @@ type Kind int
 const (
 	KindPullRequest Kind = iota
 	KindIssue
-)
-
-// Role は自分がその PR / issue にどう関わっているか。複数を同時に持ちうる。
-type Role int
-
-const (
-	RoleAuthor Role = 1 << iota
-	RoleAssignee
-	RoleReviewRequested
-	RoleReviewed
 )
 
 // EventType はタイムラインイベントの種類。
@@ -87,9 +77,7 @@ type Item struct {
 	State       string // OPEN / CLOSED / MERGED
 	StateReason string // issue のみ。COMPLETED / NOT_PLANNED など
 	IsDraft     bool
-	Author      string
 	UpdatedAt   time.Time
-	Roles       Role
 	Events      []Event // 古い順
 
 	headRepo string // PR のみ。head ブランチのあるリポジトリ（owner/name）
@@ -105,7 +93,7 @@ func (i Item) Key() string {
 type SearchResult struct {
 	Viewer string // 認証中のユーザーの login
 	Items  []Item // 新しく更新された順
-	// Truncated は、いずれかの検索条件で searchPageSize を超えてヒットし、
+	// Truncated は、いずれかの検索条件で SearchPageSize を超えてヒットし、
 	// 取りこぼしがあることを示す。
 	Truncated bool
 	// PartialErrors は、結果の一部を取得できなかったときの GraphQL のエラーメッセージ（重複を除く）。
@@ -157,7 +145,7 @@ func NewClient(run Runner, includeTeamReviews bool) *Client {
 // seenKeys は表示済みの PR / issue の Key で、これに含まれない PR だけコミットの時刻を push の時刻に置き換える。
 // gh が失敗しても、応答に data があれば部分的な結果として返す。
 func (c *Client) Search(ctx context.Context, since time.Time, seenKeys map[string]bool) (SearchResult, error) {
-	args := []string{"api", "graphql", "-f", "query=" + searchQuery, "-F", fmt.Sprintf("first=%d", searchPageSize)}
+	args := []string{"api", "graphql", "-f", "query=" + searchQuery, "-F", fmt.Sprintf("first=%d", SearchPageSize)}
 	for name, q := range searchQueries(since, c.includeTeamReviews) {
 		args = append(args, "-f", name+"="+q)
 	}
