@@ -95,6 +95,11 @@ type rawItem struct {
 	} `json:"headRepository"` // PR のみ。fork が削除されると null
 }
 
+// key は convertItem で作る Item の Key と同じ値を返す。
+func (raw rawItem) key() string {
+	return itemKey(stripControl(raw.Repository.NameWithOwner), raw.Number)
+}
+
 type rawEvent struct {
 	Typename    string     `json:"__typename"`
 	ID          string     `json:"id"`
@@ -151,12 +156,12 @@ func buildResult(viewer string, conns []namedConnection, partialErrors []string)
 			result.Truncated = true
 		}
 		for _, raw := range c.conn.Nodes {
-			item, ok := convertItem(raw)
-			if !ok {
+			key := raw.key()
+			if seenKeys[key] {
 				continue
 			}
-			key := item.Key()
-			if seenKeys[key] {
+			item, ok := convertItem(raw)
+			if !ok {
 				continue
 			}
 			seenKeys[key] = true
@@ -268,10 +273,7 @@ func convertEvent(raw rawEvent) (Event, bool) {
 	case "ReviewRequestedEvent":
 		ev := actorEvent(EventReviewRequested, raw)
 		if r := raw.RequestedReviewer; r != nil {
-			ev.Target = r.Login
-			if ev.Target == "" {
-				ev.Target = r.Name
-			}
+			ev.Target = cmp.Or(r.Login, r.Name)
 		}
 		return ev, true
 	case "AssignedEvent":

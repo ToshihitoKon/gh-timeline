@@ -13,17 +13,22 @@ import (
 	"github.com/ToshihitoKon/gh-timeline/internal/timeline"
 )
 
-// 現状はダーク背景のターミナル専用に固定色を使う（cc-dashboard と同じ方針）。
+// 色は黒い背景の端末で見分けられるものを選んでいる。
 // 行は列幅をそろえずに詰めて並べるため、要素の切れ目が色で分かるよう要素ごとに色を変える。
 var (
+	// リポジトリ名の 75 と同じ青系で、より明るい 117 にし、太字と合わせて区切り行を見出し行より目立たせる。
 	separatorStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("117"))
 	faintStyle     = lipgloss.NewStyle().Faint(true)
 	repoStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))  // 青
 	actionStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // 橙。承認・マージなどは eventKinds で別の色にする
 	// シアン。桃系（213 など）は 16 色の端末でマージ済みの紫と同じマゼンタに丸められ、見分けられなくなる。
 	userStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
+	// タイトルは純白（231）より一段暗い 252 にし、色を付けた番号やユーザー名が埋もれないようにする。
 	textStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 
+	// PR / issue の状態は GitHub の表示に合わせて、open を緑、draft を灰、merged を紫、closed を赤にする。
+	// 紫の 141 と赤の 203 は、54 や 124 のような暗い番号では黒い背景に沈むため、明るい番号にしている。
+	// draft の 245 は、既読の罫線の 240 より明るくし、本文として読めるようにする。
 	openStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	draftStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	mergedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("141"))
@@ -72,18 +77,16 @@ type RenderOptions struct {
 	Width int
 	// ShowURL は見出し行の次に PR / issue の URL の行を出すか。
 	ShowURL bool
-	// UseHyperlinks は見出し行と URL の行を OSC 8 のリンクにするか。
-	// -dump の出力をパイプで受けた側に、見えないエスケープシーケンスを混ぜないよう、TUI だけで使う。
-	UseHyperlinks bool
-	// ShowGutter は各行の左端に、新着の印・丸・罫線の欄を付けるか。TUI だけで使う。
-	ShowGutter bool
+	// IsTUI は TUI 向けに、各行の左端に新着の印・丸・罫線の欄を付け、見出し行と URL の行を OSC 8 のリンクにするか。
+	// -dump で使わないのは、出力をパイプで受けた側に見えないエスケープシーケンスを混ぜないため。
+	IsTUI bool
 }
 
 // RenderBatches は全 Batch を新しいものを上にして描画する。各 Batch は "--- HH:MM ---" の区切り行に続けて、
 // PR / issue ごとに "owner/repo PR#123 タイトル" の見出し行と、字下げした "時刻 アクション ユーザー" のイベント行で描画する。
 // PR / issue は最新のイベントが新しい順、イベントも新しい順に並べる。
 // 区切り行には、1 つ前（時刻が古い側）の Batch と日付が変わったときだけ日付を出す。
-// batches は古い順で渡し、ShowGutter のときは先頭から readCount 件を既読、それより新しいものを未読として欄に出す。
+// batches は古い順で渡し、IsTUI のときは先頭から readCount 件を既読、それより新しいものを未読として欄に出す。
 func RenderBatches(batches []timeline.Batch, readCount int, opts RenderOptions) string {
 	var cache batchRenderCache
 	return cache.render(batches, readCount, opts)
@@ -95,7 +98,7 @@ func RenderBatches(batches []timeline.Batch, readCount int, opts RenderOptions) 
 //
 // 保持する Batch の数に上限を設けるほうが単純だが、さかのぼって読める履歴が消えるため採らない。
 type batchRenderCache struct {
-	// bodyOpts は blocks を描画したときの RenderOptions。行の中身を変えない Width と ShowGutter は 0 にしておく。
+	// bodyOpts は blocks を描画したときの RenderOptions。行の中身を変えない Width は 0 にしておく。
 	bodyOpts RenderOptions
 	blocks   [][]batchLine
 }
@@ -103,7 +106,7 @@ type batchRenderCache struct {
 // render は RenderBatches と同じ結果を返す。
 func (c *batchRenderCache) render(batches []timeline.Batch, readCount int, opts RenderOptions) string {
 	bodyOpts := opts
-	bodyOpts.Width, bodyOpts.ShowGutter = 0, false
+	bodyOpts.Width = 0
 	if bodyOpts != c.bodyOpts || len(c.blocks) > len(batches) {
 		c.bodyOpts = bodyOpts
 		c.blocks = nil
@@ -117,16 +120,16 @@ func (c *batchRenderCache) render(batches []timeline.Batch, readCount int, opts 
 	}
 
 	var gutters gutterSet
-	if opts.ShowGutter {
+	if opts.IsTUI {
 		gutters = newGutterSet()
 	}
 	var sb strings.Builder
-	for i := len(c.blocks) - 1; i >= 0; i-- {
-		if i < len(c.blocks)-1 {
+	for i, block := range slices.Backward(c.blocks) {
+		if sb.Len() > 0 {
 			sb.WriteString("\n\n")
 		}
 		isUnread := i >= readCount
-		for j, l := range c.blocks[i] {
+		for j, l := range block {
 			if j > 0 {
 				sb.WriteByte('\n')
 			}
@@ -205,18 +208,19 @@ func gutter(kind lineKind, isUnread bool) string {
 
 func batchLines(b timeline.Batch, prevCheckedAt time.Time, opts RenderOptions) []batchLine {
 	lines := []batchLine{newBatchLine(lineSeparator, separator(b.CheckedAt, prevCheckedAt))}
-	for _, blk := range batchBlocks(b) {
+	for _, e := range b.Entries {
+		events := entryEvents(e)
 		var linkURL string
-		if opts.UseHyperlinks {
-			linkURL = blk.Item.URL
+		if opts.IsTUI {
+			linkURL = e.Item.URL
 		}
-		lines = append(lines, newBatchLine(lineItemHeader, renderItemHeader(blk, opts.Viewer, linkURL)))
-		if url := blk.Item.URL; opts.ShowURL && url != "" {
+		lines = append(lines, newBatchLine(lineItemHeader, renderItemHeader(e.Item, events, opts.Viewer, linkURL)))
+		if url := e.Item.URL; opts.ShowURL && url != "" {
 			urlText := faintStyle.Underline(linkURL != "").Render(url)
 			lines = append(lines, newBatchLine(lineURL, eventIndent+hyperlink(urlText, linkURL)))
 		}
-		for _, ev := range blk.Events {
-			lines = append(lines, newBatchLine(lineEvent, renderEventLine(ev, blk.Item.Repo, b.CheckedAt, opts.Viewer)))
+		for _, ev := range events {
+			lines = append(lines, newBatchLine(lineEvent, renderEventLine(ev, e.Item.Repo, b.CheckedAt, opts.Viewer)))
 		}
 	}
 	return lines
@@ -252,21 +256,7 @@ func separator(checkedAt, prevCheckedAt time.Time) string {
 	return separatorStyle.Render("--- " + label + " ---")
 }
 
-// itemBlock は 1 件の PR / issue と、表示するイベント（新しい順、1 件以上）。
-type itemBlock struct {
-	Item   github.Item
-	Events []displayEvent
-}
-
-// batchBlocks は Batch 内のイベントを PR / issue ごとにまとめる。並びは Entries の順のまま。
-func batchBlocks(b timeline.Batch) []itemBlock {
-	blocks := make([]itemBlock, 0, len(b.Entries))
-	for _, e := range b.Entries {
-		blocks = append(blocks, itemBlock{Item: e.Item, Events: entryEvents(e)})
-	}
-	return blocks
-}
-
+// entryEvents は e の表示するイベントを、まとめたうえで新しい順に返す。
 func entryEvents(e timeline.Entry) []displayEvent {
 	events := collapseEvents(e.Events)
 	// 並べ替えずに反転だけで新しい順になるのは、e.Events が古い順で、collapseEvents がまとめた行に
@@ -282,10 +272,10 @@ const eventIndent = "  "
 // PR#123 / IS#45 の部分は PR / issue の状態（open / draft / merged / closed）の色で塗る。
 // linkURL が空でなければ "owner/repo PR#123" の部分を linkURL へのリンクにして下線を引く。
 // タイトルまで含めると、すべての見出しに長い下線が付いて画面がうるさくなるため、タイトルは含めない。
-func renderItemHeader(blk itemBlock, viewer, linkURL string) string {
-	item := blk.Item
+// events は item の表示するイベントで、自分の操作だけなら見出しも薄くする。
+func renderItemHeader(item github.Item, events []displayEvent, viewer, linkURL string) string {
 	repoSt, numberSt, gapSt, titleSt := repoStyle, itemStateStyle(item).Bold(true), lipgloss.NewStyle(), textStyle
-	isOnlyViewer := !slices.ContainsFunc(blk.Events, func(ev displayEvent) bool { return ev.Actor != viewer })
+	isOnlyViewer := !slices.ContainsFunc(events, func(ev displayEvent) bool { return ev.Actor != viewer })
 	if isOnlyViewer {
 		repoSt, numberSt, gapSt, titleSt = faintStyle, faintStyle, faintStyle, faintStyle
 	}
@@ -377,28 +367,29 @@ type displayEvent struct {
 func collapseEvents(events []github.Event) []displayEvent {
 	var out []displayEvent
 	for _, ev := range events {
-		n := len(out)
-		if n == 0 {
-			out = append(out, newDisplayEvent(ev))
+		if n := len(out); n > 0 && mergeInto(&out[n-1], ev) {
 			continue
 		}
-		last := &out[n-1]
-		if ev.Actor != last.Actor || ev.Type != last.Type {
-			out = append(out, newDisplayEvent(ev))
-			continue
-		}
-		switch eventKindOf(ev.Type).collapse {
-		case collapseByCount:
-			last.Count++
-			last.At = ev.At
-		case collapseByTargets:
-			last.Targets = appendTarget(last.Targets, ev.Target)
-			last.At = ev.At
-		default:
-			out = append(out, newDisplayEvent(ev))
-		}
+		out = append(out, newDisplayEvent(ev))
 	}
 	return out
+}
+
+// mergeInto は、ev が last と同じ人の同種のイベントで、まとめられる種類なら last にまとめ、まとめたかを返す。
+func mergeInto(last *displayEvent, ev github.Event) bool {
+	if ev.Actor != last.Actor || ev.Type != last.Type {
+		return false
+	}
+	switch eventKindOf(ev.Type).collapse {
+	case collapseByCount:
+		last.Count++
+	case collapseByTargets:
+		last.Targets = appendTarget(last.Targets, ev.Target)
+	default:
+		return false
+	}
+	last.At = ev.At
+	return true
 }
 
 // unknownActor は、誰の操作か分からないイベント（EventUpdated）の行に出す行った人。

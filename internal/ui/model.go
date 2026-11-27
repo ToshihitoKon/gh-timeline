@@ -1,8 +1,4 @@
-// Package ui は bubbletea を使った TUI 表示を提供する。
-//
-// 画面は上から順に、タイトル・状態行・タイムライン（viewport）・フッタの 4 段。
-// タイムラインは追記専用で、ポーリングで更新が見つかるたびに
-// "--- HH:MM ---" の区切り行から始まるまとまりを先頭に足していく。
+// Package ui は bubbletea を使った TUI 表示と、-dump と共通の更新の描画を提供する。
 package ui
 
 import (
@@ -42,9 +38,7 @@ type Model struct {
 
 	viewer  string
 	batches []timeline.Batch
-	// watchingSince は初めて成功した取得の検索範囲の始点で、ゼロなら取得に一度も成功していない。
-	// 更新が無いときの案内と、初回に取得した分を既読にするのに使う。
-	watchingSince time.Time
+	// lastCheckedAt は直近に成功した取得の開始時刻で、ゼロなら取得に一度も成功していない。
 	lastCheckedAt time.Time
 	nextPollAt    time.Time
 	lastErr       error
@@ -67,7 +61,6 @@ type Model struct {
 	viewport viewport.Model
 	spinner  spinner.Model
 	ready    bool // 最初の WindowSizeMsg を受け取るまで viewport は使えない
-	width    int
 }
 
 // NewModel は Model を作る。showURL が true なら PR / issue の見出し行の次に URL の行を出す。
@@ -108,7 +101,6 @@ func (m *Model) scheduleNextPoll(now time.Time) tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
 		height := max(msg.Height-chromeLines, 1)
 		if !m.ready {
 			m.viewport = viewport.New(msg.Width, height)
@@ -158,6 +150,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.isFetching = false
 		m.lastErr = msg.err
 		if msg.err == nil {
+			isFirstFetch := m.lastCheckedAt.IsZero()
 			m.lastCheckedAt = msg.poll.StartedAt
 			m.viewer = msg.result.Viewer
 			m.missingResultsWarning = timeline.MissingResultsWarning(msg.result)
@@ -169,10 +162,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if hasUpdates {
 				m.batches = append(m.batches, batch)
 			}
-			isFirstFetch := m.watchingSince.IsZero()
 			if isFirstFetch {
 				m.readBatchCount = len(m.batches)
-				m.watchingSince = msg.poll.Since
 			}
 			// 初回の取得では更新が無くても「Loading...」を「No updates since ...」に
 			// 置き換える必要があるため描き直す。
@@ -217,17 +208,17 @@ func (m *Model) refreshContent() {
 
 func (m *Model) renderTimeline() string {
 	if len(m.batches) == 0 {
-		if m.watchingSince.IsZero() {
+		if m.lastCheckedAt.IsZero() {
 			return faintStyle.Render("Loading...")
 		}
-		return faintStyle.Render(NoUpdatesText(m.watchingSince))
+		// 初めて成功した取得は、失敗した回があっても初回の始点から検索している
+		return faintStyle.Render(NoUpdatesText(m.tracker.FirstSince()))
 	}
 	return m.renderCache.render(m.batches, m.readBatchCount, RenderOptions{
-		Viewer:        m.viewer,
-		Width:         m.width,
-		ShowURL:       m.showURL,
-		UseHyperlinks: true,
-		ShowGutter:    true,
+		Viewer:  m.viewer,
+		Width:   m.viewport.Width,
+		ShowURL: m.showURL,
+		IsTUI:   true,
 	})
 }
 
@@ -241,7 +232,8 @@ func (m Model) View() string {
 	}
 	title := lipgloss.NewStyle().Bold(true).Render("gh-timeline — " + viewer)
 	// 折り返しで viewport の高さの計算がずれないよう、viewport 以外の行も端末幅で切り詰める。
-	return truncate(title, m.width) + "\n" + truncate(m.statusLine(), m.width) + "\n" + m.viewport.View() + "\n" + truncate(m.footer(), m.width)
+	width := m.viewport.Width
+	return truncate(title, width) + "\n" + truncate(m.statusLine(), width) + "\n" + m.viewport.View() + "\n" + truncate(m.footer(), width)
 }
 
 func (m Model) statusLine() string {

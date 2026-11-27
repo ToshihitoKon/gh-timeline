@@ -44,8 +44,9 @@ type branchPushes struct {
 }
 
 // needsPushTimes は、PR に push の時刻で置き換えるコミットがあり、push を取得できるかを返す。
+// issue は head ブランチを持たないため、ここで false になる。
 func needsPushTimes(item Item) bool {
-	if item.Kind != KindPullRequest || item.headRepo == "" || item.headRef == "" {
+	if item.headRepo == "" || item.headRef == "" {
 		return false
 	}
 	return slices.ContainsFunc(item.Events, func(ev Event) bool { return ev.Type == EventCommitted })

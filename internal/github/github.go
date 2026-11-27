@@ -122,7 +122,11 @@ type Item struct {
 
 // Key は PR / issue を一意に識別する文字列。
 func (i Item) Key() string {
-	return fmt.Sprintf("%s#%d", i.Repo, i.Number)
+	return itemKey(i.Repo, i.Number)
+}
+
+func itemKey(repo string, number int) string {
+	return fmt.Sprintf("%s#%d", repo, number)
 }
 
 // SearchResult は 1 回の検索の結果。
