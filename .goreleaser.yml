@@ -24,9 +24,15 @@ archives:
   # そのまま実行ファイルとして置く。アーカイブに固めると見つけられないため、バイナリのまま載せる。
   - formats: [binary]
     name_template: '{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}'
-# Release とその本文は release-please が先に作るため、GoReleaser はバイナリを載せるだけにする。
+# Release とその本文は release-please が下書きで先に作るため、GoReleaser はバイナリを載せて公開するだけにする。
 changelog:
   disable: true
 release:
   prerelease: auto
   mode: keep-existing
+  # GitHub の tag で Release を引く API は下書きを返さないため、下書きは名前で探させる。
+  # release-please は Release 名をタグと同じ "vX.Y.Z" にするので、名前もタグにそろえる。
+  use_existing_draft: true
+  name_template: "{{ .Tag }}"
+  # 途中で失敗したジョブを再実行すると、載せ終えたバイナリと重なって 422 で止まるため。
+  replace_existing_artifacts: true
