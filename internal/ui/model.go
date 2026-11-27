@@ -285,7 +285,7 @@ func (m Model) footer() string {
 	case len(m.partialErrors) > 0:
 		return draftStyle.Render("some results are missing: "+oneLine(strings.Join(m.partialErrors, "; "))) + "   " + keys
 	case m.isTruncated:
-		return draftStyle.Render(fmt.Sprintf("some results were truncated (over %d hits)", github.SearchPageSize)) + "   " + keys
+		return draftStyle.Render(fmt.Sprintf("some results were truncated (over %d hits)", github.MaxSearchHits)) + "   " + keys
 	}
 	return keys
 }

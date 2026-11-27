@@ -281,7 +281,7 @@ func prsResponse(n int) string {
 
 func TestClientSearch_FetchesPushesOfEachNewPR(t *testing.T) {
 	gh := &fakeGH{searchResponse: prsResponse(3), activityResponse: pushActivityResponse}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now(), nil)
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

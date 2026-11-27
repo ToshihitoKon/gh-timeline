@@ -18,11 +18,18 @@ import (
 //go:embed search.graphql
 var searchQuery string
 
-// SearchPageSize は 1 つの検索条件で取得する件数。GitHub の検索 API が
-// 1 ページで返せる上限の 100 にしている。ページングしないのは、ポーリング間隔
-// （既定 5 分）の間に 100 件を超えて更新されることは想定しにくく、超えた場合も
-// SearchResult.Truncated で利用者に知らせれば足りるため。
-const SearchPageSize = 100
+// searchPageSize は 1 つの検索条件で 1 回に取得する件数。GraphQL のコストは件数にほぼ比例する一方、
+// 2 回目以降のポーリングの検索範囲は前回の開始から十数分ほどで、ヒットはふつう数件にとどまる。
+// 25 にするのは、firstPages のコストが 12 ポイントに下がり、MaxSearchHits の 100 件をちょうど 4 ページで取れるため。
+const searchPageSize = 25
+
+// maxSearchPages は 1 つの検索条件で取得するページ数の上限。上限が無いと、-since を長くした初回の
+// ポーリングなどでヒットが多いとき、コストと gh の呼び出しが際限なく増える。4 ページにするのは、
+// すべての検索条件で上限まで取ったときのコストが、100 件を 1 ページで取っていたときと同じ 48 ポイントに収まるため。
+const maxSearchPages = 4
+
+// MaxSearchHits は 1 つの検索条件で取得する件数の上限。超えてヒットした分は SearchResult.Truncated で知らせる。
+const MaxSearchHits = searchPageSize * maxSearchPages
 
 // Kind は PR か issue かの区別。
 type Kind int
@@ -95,7 +102,7 @@ func (i Item) Key() string {
 type SearchResult struct {
 	Viewer string // 認証中のユーザーの login
 	Items  []Item // 新しく更新された順
-	// Truncated は、いずれかの検索条件で SearchPageSize を超えてヒットし、
+	// Truncated は、いずれかの検索条件で MaxSearchHits を超えてヒットし、
 	// 取りこぼしがあることを示す。
 	Truncated bool
 	// PartialErrors は、結果の一部を取得できなかったときのメッセージ（重複を除く）。
@@ -155,23 +162,47 @@ func NewClient(run Runner, includeTeamReviews bool) *Client {
 // Search は since 以降に更新された、自分が関わる PR / issue を取得する。
 // gh が失敗しても、応答に data があれば部分的な結果として返す。
 func (c *Client) Search(ctx context.Context, since time.Time) (SearchResult, error) {
-	args := []string{"api", "graphql", "-f", "query=" + searchQuery, "-F", fmt.Sprintf("first=%d", SearchPageSize)}
-	for name, q := range searchQueries(since, c.includeTeamReviews) {
+	queries := searchQueries(since, c.includeTeamReviews)
+	args := []string{"api", "graphql", "-f", "query=" + searchQuery, "-f", "operationName=firstPages", "-F", fmt.Sprintf("first=%d", searchPageSize)}
+	for name, q := range queries {
 		args = append(args, "-f", name+"="+q)
 	}
 	out, runErr := c.run(ctx, args...)
-	result, err := parseResponse(out)
+	pages, partialErrors, err := decodeResponse[firstPages](out, runErr)
 	if err != nil {
-		// gh が失敗していれば、応答を読めなかった理由は gh の stderr の方がよく表している。
-		if runErr != nil {
-			return SearchResult{}, runErr
-		}
 		return SearchResult{}, err
 	}
+	partialErrors = append(partialErrors, c.fetchRemainingPages(ctx, pages, queries)...)
+	result := buildResult(pages, partialErrors)
 	if numFailed := c.retimeCommitsByPush(ctx, result.Items); numFailed > 0 {
 		result.PartialErrors = append(result.PartialErrors, pushTimesUnavailableMessage(numFailed))
 	}
 	return result, nil
+}
+
+// fetchRemainingPages は、1 ページ目に収まらなかった検索条件の続きを maxSearchPages まで取得して pages に足し、
+// 取得できなかったときのメッセージを返す。取得できなければその検索条件はそこで止め、取れた分だけを使う。
+//
+// ページの取得の合間に更新された PR / issue は前のページへ移り、今回は取りこぼすことがある。
+// 更新時刻が今回のポーリングの開始より後になるため、次のポーリングの検索範囲に入る。
+func (c *Client) fetchRemainingPages(ctx context.Context, pages *firstPages, queries map[string]string) []string {
+	var msgs []string
+	for _, nc := range pages.connections() {
+		conn := nc.conn
+		for numPages := 1; numPages < maxSearchPages && conn.IssueCount > len(conn.Nodes) && conn.PageInfo.HasNextPage; numPages++ {
+			out, runErr := c.run(ctx, "api", "graphql", "-f", "query="+searchQuery, "-f", "operationName=nextPage",
+				"-F", fmt.Sprintf("first=%d", searchPageSize), "-f", "searchQuery="+queries[nc.name], "-f", "after="+conn.PageInfo.EndCursor)
+			page, pageErrors, err := decodeResponse[nextPage](out, runErr)
+			msgs = append(msgs, pageErrors...)
+			if err != nil {
+				msgs = append(msgs, fmt.Sprintf("more %s results unavailable: %v", nc.name, err))
+				break
+			}
+			conn.Nodes = append(conn.Nodes, page.Search.Nodes...)
+			conn.PageInfo = page.Search.PageInfo
+		}
+	}
+	return msgs
 }
 
 // retimeCommitsByPush は、PR のコミットの時刻を push された時刻に置き換え、push を取得できなかった PR の数を返す。

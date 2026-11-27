@@ -3,10 +3,12 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -398,9 +400,129 @@ func TestClientSearch_PassesQueryVariablesToGH(t *testing.T) {
 		t.Errorf("len(Items) = %d, want 2", len(got.Items))
 	}
 	joined := strings.Join(gotArgs, "\n")
-	for _, name := range []string{"authored=", "assigned=", "reviewRequested=", "reviewedBy=", "first=100"} {
+	for _, name := range []string{"authored=", "assigned=", "reviewRequested=", "reviewedBy=", "first=25", "operationName=firstPages"} {
 		if !strings.Contains(joined, "\n"+name) {
 			t.Errorf("gh args missing %q", name)
 		}
+	}
+}
+
+// parseResponse は、続きのページを取らずに firstPages の応答だけから SearchResult を作る。
+func parseResponse(body []byte) (SearchResult, error) {
+	pages, msgs, err := decodeResponse[firstPages](body, nil)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	return buildResult(pages, msgs), nil
+}
+
+// issueNodes は o/r の issue を、番号 first から n 件並べた検索結果のノードを作る。
+func issueNodes(first, n int) string {
+	nodes := make([]string, n)
+	for i := range nodes {
+		nodes[i] = fmt.Sprintf(`{"__typename": "Issue", "number": %d, "updatedAt": "2026-11-20T03:00:00Z",
+		  "repository": {"nameWithOwner": "o/r"}, "timelineItems": {"nodes": []}}`, first+i)
+	}
+	return strings.Join(nodes, ",")
+}
+
+// pagingGH は、authored だけが issueCount 件ヒットする検索に、1 ページ searchPageSize 件ずつ答える。
+// nextPage の呼び出しの引数を記録し、nextPageErr があればそれを返す。
+type pagingGH struct {
+	issueCount  int
+	nextPageErr error
+
+	nextPageCalls [][]string
+}
+
+func (f *pagingGH) page(startNumber int) (nodes string, pageInfo string) {
+	n := min(searchPageSize, f.issueCount-startNumber+1)
+	hasNext := startNumber+n <= f.issueCount
+	return issueNodes(startNumber, n), fmt.Sprintf(`{"hasNextPage": %t, "endCursor": "cursor%d"}`, hasNext, startNumber+n)
+}
+
+func (f *pagingGH) run(_ context.Context, args ...string) ([]byte, error) {
+	if !slices.Contains(args, "operationName=nextPage") {
+		nodes, pageInfo := f.page(1)
+		return fmt.Appendf(nil, `{"data": {
+		  "viewer": {"login": "me"},
+		  "authored": {"issueCount": %d, "pageInfo": %s, "nodes": [%s]},
+		  "assigned": {"issueCount": 0, "nodes": []},
+		  "reviewRequested": {"issueCount": 0, "nodes": []},
+		  "reviewedBy": {"issueCount": 0, "nodes": []}
+		}}`, f.issueCount, pageInfo, nodes), nil
+	}
+	f.nextPageCalls = append(f.nextPageCalls, args)
+	if f.nextPageErr != nil {
+		return nil, f.nextPageErr
+	}
+	var startNumber int
+	for _, arg := range args {
+		if after, ok := strings.CutPrefix(arg, "after=cursor"); ok {
+			startNumber, _ = strconv.Atoi(after)
+		}
+	}
+	nodes, pageInfo := f.page(startNumber)
+	return fmt.Appendf(nil, `{"data": {"search": {"issueCount": %d, "pageInfo": %s, "nodes": [%s]}}}`, f.issueCount, pageInfo, nodes), nil
+}
+
+func TestClientSearch_FetchesNextPagesOnlyWhenHitsExceedFirstPage(t *testing.T) {
+	for _, tc := range []struct {
+		issueCount    int
+		wantNextPages int
+		wantItems     int
+		wantTruncated bool
+	}{
+		{issueCount: searchPageSize, wantNextPages: 0, wantItems: searchPageSize},
+		{issueCount: searchPageSize + 1, wantNextPages: 1, wantItems: searchPageSize + 1},
+		{issueCount: MaxSearchHits, wantNextPages: maxSearchPages - 1, wantItems: MaxSearchHits},
+		// 上限を超えた分は取らず、Truncated で知らせる
+		{issueCount: MaxSearchHits + 1, wantNextPages: maxSearchPages - 1, wantItems: MaxSearchHits, wantTruncated: true},
+	} {
+		gh := &pagingGH{issueCount: tc.issueCount}
+		got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(gh.nextPageCalls) != tc.wantNextPages || len(got.Items) != tc.wantItems || got.Truncated != tc.wantTruncated {
+			t.Errorf("issueCount %d: next pages = %d, items = %d, Truncated = %t; want %d, %d, %t",
+				tc.issueCount, len(gh.nextPageCalls), len(got.Items), got.Truncated, tc.wantNextPages, tc.wantItems, tc.wantTruncated)
+		}
+	}
+}
+
+func TestClientSearch_PassesSearchQueryAndCursorToNextPage(t *testing.T) {
+	gh := &pagingGH{issueCount: searchPageSize + 1}
+	since := time.Date(2026, 11, 20, 3, 0, 0, 0, time.UTC)
+	if _, err := NewClient(gh.run, false).Search(context.Background(), since); err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.nextPageCalls) != 1 {
+		t.Fatalf("next page calls = %d, want 1", len(gh.nextPageCalls))
+	}
+	args := gh.nextPageCalls[0]
+	for _, want := range []string{
+		"searchQuery=" + searchQueries(since, false)["authored"],
+		fmt.Sprintf("after=cursor%d", searchPageSize+1),
+		fmt.Sprintf("first=%d", searchPageSize),
+	} {
+		if !slices.Contains(args, want) {
+			t.Errorf("next page args = %q, want %q", args, want)
+		}
+	}
+}
+
+func TestClientSearch_KeepsFirstPageWhenNextPageFails(t *testing.T) {
+	gh := &pagingGH{issueCount: searchPageSize + 1, nextPageErr: errors.New("gh api: timed out")}
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != searchPageSize {
+		t.Errorf("len(Items) = %d, want %d (the first page)", len(got.Items), searchPageSize)
+	}
+	want := []string{"more authored results unavailable: gh api: timed out"}
+	if !slices.Equal(got.PartialErrors, want) {
+		t.Errorf("PartialErrors = %q, want %q", got.PartialErrors, want)
 	}
 }
