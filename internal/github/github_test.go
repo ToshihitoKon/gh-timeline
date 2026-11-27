@@ -267,7 +267,7 @@ func TestClientSearch_UsesDataWhenGHFailsWithPartialErrors(t *testing.T) {
 	fake := func(context.Context, ...string) ([]byte, error) {
 		return []byte(partialResponse), errors.New("gh api: exit status 1")
 	}
-	got, err := NewClient(fake, false).Search(context.Background(), time.Now(), nil)
+	got, err := NewClient(fake, false).Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestClientSearch_ReturnsGHErrorWithoutData(t *testing.T) {
 		"null data": `{"data": null, "errors": [{"message": "boom"}]}`,
 	} {
 		fake := func(context.Context, ...string) ([]byte, error) { return []byte(out), ghErr }
-		if _, err := NewClient(fake, false).Search(context.Background(), time.Now(), nil); err != ghErr {
+		if _, err := NewClient(fake, false).Search(context.Background(), time.Now()); err != ghErr {
 			t.Errorf("%s: err = %v, want the gh error", name, err)
 		}
 	}
@@ -362,7 +362,7 @@ func TestClientSearch_PassesQueryVariablesToGH(t *testing.T) {
 		gotArgs = args
 		return []byte(sampleResponse), nil
 	}
-	got, err := NewClient(fake, false).Search(context.Background(), time.Now(), nil)
+	got, err := NewClient(fake, false).Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

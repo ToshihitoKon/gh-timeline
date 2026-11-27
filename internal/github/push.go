@@ -25,12 +25,39 @@ type push struct {
 	At    time.Time
 }
 
+// branchKey は push を取得するブランチ。
+type branchKey struct {
+	repo string // owner/name
+	ref  string // ブランチ名
+}
+
+func branchOf(item Item) branchKey {
+	return branchKey{repo: item.headRepo, ref: item.headRef}
+}
+
+// branchPushes は、ブランチの最新のコミットが newestCommit だったときに取得した push。
+type branchPushes struct {
+	newestCommit string
+	pushes       []push
+}
+
 // needsPushTimes は、PR に push の時刻で置き換えるコミットがあり、push を取得できるかを返す。
 func needsPushTimes(item Item) bool {
 	if item.Kind != KindPullRequest || item.headRepo == "" || item.headRef == "" {
 		return false
 	}
 	return slices.ContainsFunc(item.Events, func(ev Event) bool { return ev.Type == EventCommitted })
+}
+
+// newestCommitID は PR のコミットのうち committedDate が最も新しいものの oid を返す。
+// applyPushTimes と同じく committedDate 順をブランチ上の順として扱い、これを head とみなす。
+func newestCommitID(item Item) string {
+	for _, ev := range slices.Backward(item.Events) {
+		if ev.Type == EventCommitted {
+			return ev.ID
+		}
+	}
+	return ""
 }
 
 // fetchPushes は repo の ref ブランチへの push を古い順に返す。
@@ -68,7 +95,9 @@ func fetchPushes(ctx context.Context, run Runner, repo, ref string) ([]push, err
 //
 // コミットの並びは committedDate 順をブランチ上の順として扱う。
 // rebase や cherry-pick でも committedDate はその操作の時刻になるため、通常は一致する。
-func applyPushTimes(item *Item, pushes []push) {
+//
+// どの push にも割り当てられなかったコミットには IsPushTimeUnknown を立て、すべて置き換えられたかを返す。
+func applyPushTimes(item *Item, pushes []push) (isComplete bool) {
 	var commits []*Event
 	for i := range item.Events {
 		if item.Events[i].Type == EventCommitted {
@@ -86,5 +115,9 @@ func applyPushTimes(item *Item, pushes []push) {
 		}
 		next = head + 1
 	}
+	for _, ev := range commits[next:] {
+		ev.IsPushTimeUnknown = true
+	}
 	sortByTime(item.Events)
+	return next == len(commits)
 }

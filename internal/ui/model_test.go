@@ -307,7 +307,7 @@ type fakeFetcher struct {
 	err    error
 }
 
-func (f fakeFetcher) Search(context.Context, time.Time, map[string]bool) (github.SearchResult, error) {
+func (f fakeFetcher) Search(context.Context, time.Time) (github.SearchResult, error) {
 	return f.result, f.err
 }
 
