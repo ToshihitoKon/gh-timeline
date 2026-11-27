@@ -103,7 +103,7 @@ gh timeline -dump
 
 ### Flags
 
-- `-interval`: how often to check for updates (default `5m`, minimum `30s`)
+- `-interval`: how often to check for updates (default `5m`, minimum `1m`)
 - `-since`: how far back to look on startup (default `30m`)
 - `-team-reviews`: also follow pull requests whose review is requested from your teams
 - `-show-url`: show the URL under each pull request and issue, in both the TUI and `-dump`
