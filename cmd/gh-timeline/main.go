@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -49,8 +50,8 @@ func main() {
 		fmt.Println(resolveVersion())
 		return
 	}
-	if *interval < minInterval {
-		fmt.Fprintf(os.Stderr, "gh-timeline: -interval must be at least %s\n", minInterval)
+	if err := checkFlags(*interval, *lookback); err != nil {
+		fmt.Fprintln(os.Stderr, "gh-timeline:", err)
 		os.Exit(2)
 	}
 	if _, err := exec.LookPath("gh"); err != nil {
@@ -62,7 +63,7 @@ func main() {
 	tracker := timeline.NewTracker(*lookback)
 
 	if *dump {
-		if err := runDump(client, tracker, *showURL); err != nil {
+		if err := runDump(client, tracker, *showURL, ui.FetchTimeout); err != nil {
 			fmt.Fprintln(os.Stderr, "gh-timeline:", err)
 			os.Exit(1)
 		}
@@ -78,12 +79,30 @@ func main() {
 	}
 }
 
+// checkFlags はフラグの値が受け付けられる範囲にあるかを確かめる。
+func checkFlags(interval, lookback time.Duration) error {
+	if interval < minInterval {
+		return fmt.Errorf("-interval must be at least %s", minInterval)
+	}
+	if lookback < 0 {
+		return errors.New("-since must not be negative")
+	}
+	return nil
+}
+
 // runDump は TUI を介さず、初回ポーリングと同じ内容をテキストで出力する。
-func runDump(client *github.Client, tracker *timeline.Tracker, showURL bool) error {
+func runDump(fetcher ui.Fetcher, tracker *timeline.Tracker, showURL bool, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	now := time.Now()
 	since := tracker.Since(now)
-	result, err := client.Search(context.Background(), since)
+	result, err := fetcher.Search(ctx, since)
 	if err != nil {
+		// gh が打ち切られたときのエラーは "signal: killed" だけで、時間切れだと読み取れない。
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("gave up after %s: %w", timeout, err)
+		}
 		return err
 	}
 	batch := tracker.Apply(now, since, result.Items)

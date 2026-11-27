@@ -21,11 +21,11 @@ import (
 	"github.com/ToshihitoKon/gh-timeline/internal/timeline"
 )
 
-// fetchTimeout は 1 回のポーリングで gh コマンドを待つ上限。
+// FetchTimeout は 1 回のポーリングで gh コマンドを待つ上限。
 // 4 つの検索をまとめた GraphQL クエリは通常数秒で返るが、ネットワーク断などで
 // gh が戻らないとポーリングの自己クロックが止まってしまうため、間隔（既定 5 分）より
 // 十分短い値で打ち切る。
-const fetchTimeout = 60 * time.Second
+const FetchTimeout = 60 * time.Second
 
 // spinnerFrameInterval はスピナーの 1 フレームあたりの時間（cc-dashboard と同じ 3fps）。
 const spinnerFrameInterval = time.Second / 3
@@ -102,7 +102,7 @@ func (m *Model) startFetch(now time.Time) tea.Cmd {
 	}
 	fetcher := m.fetcher
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), FetchTimeout)
 		defer cancel()
 		result, err := fetcher.Search(ctx, since)
 		return fetchedMsg{startedAt: now, since: since, result: result, err: err}
