@@ -207,7 +207,7 @@ func TestParseResponse_StripsControlCharacters(t *testing.T) {
 		actor  string
 		target string
 	}{
-		{"Bob[2J B", ""},        // git の author 名
+		{"Bob[2J B  ", ""},      // git の author 名
 		{"carol", "team[31m-a"}, // チームへのレビュー依頼
 		{"carol", "dave"},       // アサイン先の login
 	}
