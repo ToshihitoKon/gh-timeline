@@ -42,19 +42,23 @@ const pushActivityResponse = `[
 ]`
 
 // fakeGH は検索に searchResponse を、activity API に activityResponse を返し、
-// activity API の呼び出しを記録する。
+// activity API の呼び出しを記録する。activity API は PR ごとに別の goroutine から呼ばれるため、記録は mu で守る。
 type fakeGH struct {
 	searchResponse   string
 	activityResponse string
 	activityErr      error
-	activityCalls    []string
+
+	mu            sync.Mutex
+	activityCalls []string
 }
 
 func (f *fakeGH) run(_ context.Context, args ...string) ([]byte, error) {
 	if args[1] == "graphql" {
 		return []byte(f.searchResponse), nil
 	}
+	f.mu.Lock()
 	f.activityCalls = append(f.activityCalls, args[1])
+	f.mu.Unlock()
 	if f.activityErr != nil {
 		return nil, f.activityErr
 	}
@@ -273,6 +277,29 @@ func prsResponse(n int) string {
 	  "reviewRequested": {"issueCount": 0, "nodes": []},
 	  "reviewedBy": {"issueCount": 0, "nodes": []}
 	}}`, n, strings.Join(nodes, ","))
+}
+
+func TestClientSearch_FetchesPushesOfEachNewPR(t *testing.T) {
+	gh := &fakeGH{searchResponse: prsResponse(3), activityResponse: pushActivityResponse}
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 呼び出しは並列に行われ、順序は決まらない。
+	slices.Sort(gh.activityCalls)
+	want := []string{
+		"repos/o/r/activity?per_page=30&ref=refs%2Fheads%2Ffeature%2F1",
+		"repos/o/r/activity?per_page=30&ref=refs%2Fheads%2Ffeature%2F2",
+		"repos/o/r/activity?per_page=30&ref=refs%2Fheads%2Ffeature%2F3",
+	}
+	if !slices.Equal(gh.activityCalls, want) {
+		t.Errorf("activity calls = %v, want %v", gh.activityCalls, want)
+	}
+	for _, item := range got.Items {
+		if got, want := strings.Join(commitTimes(t, item), " "), "02:30 02:30 02:59"; got != want {
+			t.Errorf("%s commit times = %s, want %s", item.Key(), got, want)
+		}
+	}
 }
 
 // blockingGH は activity API の呼び出しを release が閉じられるまで止め、同時に進行中だった呼び出しの最大数を記録する。
