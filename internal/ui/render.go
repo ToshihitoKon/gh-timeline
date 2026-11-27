@@ -284,7 +284,7 @@ func itemStateStyle(item github.Item) lipgloss.Style {
 type displayEvent struct {
 	github.Event
 	Count   int      // 同じ人の連続したコメント・コミット・レビューをまとめた件数
-	Targets []string // 同じ人の連続したレビュー依頼をまとめた依頼先
+	Targets []string // 同じ人の連続したレビュー依頼・アサインをまとめた依頼先
 }
 
 // collapseEvents は同じ人による連続した同種のイベントを 1 行にまとめる。
@@ -299,11 +299,6 @@ func collapseEvents(events []github.Event) []displayEvent {
 			continue
 		}
 		last := &out[n-1]
-		// マージ時は GitHub が MergedEvent と ClosedEvent を同時に記録する。
-		// "closed" まで出すとマージとは別に閉じられたように読めるため捨てる。
-		if ev.Type == github.EventClosed && last.Type == github.EventMerged {
-			continue
-		}
 		if ev.Actor != last.Actor || ev.Type != last.Type {
 			out = append(out, newDisplayEvent(ev))
 			continue
@@ -312,7 +307,7 @@ func collapseEvents(events []github.Event) []displayEvent {
 		case github.EventCommented, github.EventCommitted, github.EventReviewed, github.EventReplied:
 			last.Count++
 			last.At = ev.At
-		case github.EventReviewRequested:
+		case github.EventReviewRequested, github.EventAssigned:
 			last.Targets = append(last.Targets, ev.Target)
 			last.At = ev.At
 		default:

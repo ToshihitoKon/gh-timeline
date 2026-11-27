@@ -110,6 +110,40 @@ func TestParseResponse_ConvertsEventsInTimeOrder(t *testing.T) {
 	}
 }
 
+func TestParseResponse_DropsClosedRecordedWithMerge(t *testing.T) {
+	// マージに伴う closed が merged より先に並ぶ応答。マージ前に閉じて開き直した回の closed は残す。
+	const body = `{
+  "data": {
+    "viewer": {"login": "me"},
+    "authored": {"issueCount": 1, "nodes": [
+      {"__typename": "PullRequest", "number": 1, "title": "Add feature", "url": "https://github.com/o/r/pull/1",
+       "state": "MERGED", "isDraft": false, "updatedAt": "2026-11-20T03:00:00Z",
+       "author": {"login": "me"}, "repository": {"nameWithOwner": "o/r"},
+       "timelineItems": {"nodes": [
+         {"__typename": "ClosedEvent", "createdAt": "2026-11-20T01:00:00Z", "actor": {"login": "alice"}},
+         {"__typename": "ReopenedEvent", "createdAt": "2026-11-20T01:10:00Z", "actor": {"login": "alice"}},
+         {"__typename": "ClosedEvent", "createdAt": "2026-11-20T02:00:00Z", "actor": {"login": "bob"}},
+         {"__typename": "MergedEvent", "createdAt": "2026-11-20T02:00:00Z", "actor": {"login": "bob"}}
+       ]}}
+    ]},
+    "assigned": {"issueCount": 0, "nodes": []},
+    "reviewRequested": {"issueCount": 0, "nodes": []},
+    "reviewedBy": {"issueCount": 0, "nodes": []}
+  }
+}`
+	got, err := parseResponse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var types []EventType
+	for _, ev := range got.Items[0].Events {
+		types = append(types, ev.Type)
+	}
+	if want := []EventType{EventClosed, EventReopened, EventMerged}; !slices.Equal(types, want) {
+		t.Errorf("event types = %v, want %v", types, want)
+	}
+}
+
 func TestParseResponse_StripsControlCharacters(t *testing.T) {
 	const body = `{
   "data": {
