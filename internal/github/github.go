@@ -48,6 +48,7 @@ const (
 	EventApproved
 	EventChangesRequested
 	EventReviewed
+	EventReplied // 既存のレビュースレッドへの返信だけのレビュー
 	EventCommitted
 	EventMerged
 	EventClosed

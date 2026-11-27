@@ -78,12 +78,15 @@ func TestRenderBatch_CollapsesNoisyEvents(t *testing.T) {
 			ev(github.EventCommented, "bot", 13, 11),
 			ev(github.EventMerged, "bot", 13, 12),
 			ev(github.EventClosed, "bot", 13, 12),
+			ev(github.EventReplied, "dave", 13, 20),
+			ev(github.EventReplied, "dave", 13, 21),
 		)},
 	}
 	got := ansi.Strip(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me"}))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
 		"o/r PR#7 Add feature",
+		"  13:21 replied (2) dave",
 		"  13:12 merged bot",
 		"  13:11 commented (2) bot",
 		"  13:00 review requested alice → bob, carol",

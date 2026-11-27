@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -50,6 +51,9 @@ type rawItem struct {
 	TimelineItems struct {
 		Nodes []rawEvent `json:"nodes"`
 	} `json:"timelineItems"`
+	Reviews struct {
+		Nodes []rawEvent `json:"nodes"`
+	} `json:"reviews"` // PR のみ
 }
 
 type rawEvent struct {
@@ -57,9 +61,14 @@ type rawEvent struct {
 	CreatedAt   time.Time  `json:"createdAt"`
 	SubmittedAt *time.Time `json:"submittedAt"`
 	State       string     `json:"state"`
+	Body        string     `json:"body"`
 	Author      *rawActor  `json:"author"`
 	Actor       *rawActor  `json:"actor"`
-	Commit      *struct {
+	Comments    *struct {
+		TotalCount int                `json:"totalCount"`
+		Nodes      []rawReviewComment `json:"nodes"`
+	} `json:"comments"`
+	Commit *struct {
 		CommittedDate time.Time `json:"committedDate"`
 		Author        *struct {
 			Name string    `json:"name"`
@@ -71,6 +80,10 @@ type rawEvent struct {
 		Name  string `json:"name"` // Team の場合
 	} `json:"requestedReviewer"`
 	Assignee *rawActor `json:"assignee"`
+}
+
+type rawReviewComment struct {
+	ReplyTo *struct{} `json:"replyTo"`
 }
 
 func parseResponse(body []byte) (SearchResult, error) {
@@ -151,7 +164,7 @@ func convertItem(raw rawItem) (Item, bool) {
 		Author:      loginOrGhost(raw.Author),
 		UpdatedAt:   raw.UpdatedAt,
 	}
-	for _, re := range raw.TimelineItems.Nodes {
+	for _, re := range slices.Concat(raw.TimelineItems.Nodes, raw.Reviews.Nodes) {
 		if ev, ok := convertEvent(re); ok {
 			item.Events = append(item.Events, ev)
 		}
@@ -172,7 +185,7 @@ func convertEvent(raw rawEvent) (Event, bool) {
 		if raw.SubmittedAt == nil {
 			return Event{}, false
 		}
-		return Event{Type: reviewEventType(raw.State), Actor: loginOrGhost(raw.Author), At: *raw.SubmittedAt}, true
+		return Event{Type: reviewEventType(raw), Actor: loginOrGhost(raw.Author), At: *raw.SubmittedAt}, true
 	case "PullRequestCommit":
 		if raw.Commit == nil {
 			return Event{}, false
@@ -209,15 +222,27 @@ func convertEvent(raw rawEvent) (Event, bool) {
 	return Event{}, false
 }
 
-func reviewEventType(state string) EventType {
-	switch state {
+func reviewEventType(raw rawEvent) EventType {
+	switch raw.State {
 	case "APPROVED":
 		return EventApproved
 	case "CHANGES_REQUESTED":
 		return EventChangesRequested
-	default:
-		return EventReviewed
 	}
+	if isReplyOnly(raw) {
+		return EventReplied
+	}
+	return EventReviewed
+}
+
+// isReplyOnly は、本文が無く、コメントがすべて既存スレッドへの返信のレビューかを返す。
+// 新しいスレッドや本文を含むレビューは GitHub の画面でもレビューとして出るため、返信として扱わない。
+func isReplyOnly(raw rawEvent) bool {
+	c := raw.Comments
+	if raw.Body != "" || c == nil || c.TotalCount == 0 || c.TotalCount > len(c.Nodes) {
+		return false
+	}
+	return !slices.ContainsFunc(c.Nodes, func(n rawReviewComment) bool { return n.ReplyTo == nil })
 }
 
 func actorEvent(t EventType, raw rawEvent) Event {

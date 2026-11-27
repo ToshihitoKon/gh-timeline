@@ -57,6 +57,7 @@ Consecutive events of the same kind by the same person are combined, such as `co
 Actions:
 
 - `commented`, `approved`, `changes requested`, `reviewed`
+- `replied`: replies to existing review comments
 - `pushed N commits`, `force-pushed`
 - `merged`, `closed`, `reopened`
 - `review requested`, `assigned`

@@ -15,10 +15,20 @@ const sampleResponse = `{
        "state": "OPEN", "isDraft": false, "updatedAt": "2026-11-20T03:00:00Z",
        "author": {"login": "me"}, "repository": {"nameWithOwner": "o/r"},
        "timelineItems": {"nodes": [
-         {"__typename": "PullRequestReview", "submittedAt": "2026-11-20T02:30:00Z", "createdAt": "2026-11-20T02:00:00Z", "state": "APPROVED", "author": {"login": "alice"}},
          {"__typename": "IssueComment", "createdAt": "2026-11-20T02:10:00Z", "author": null},
-         {"__typename": "PullRequestReview", "submittedAt": null, "createdAt": "2026-11-20T02:50:00Z", "state": "PENDING", "author": {"login": "me"}},
          {"__typename": "PullRequestCommit", "commit": {"committedDate": "2026-11-20T02:40:00Z", "author": {"name": "Bob B", "user": null}}}
+       ]},
+       "reviews": {"nodes": [
+         {"__typename": "PullRequestReview", "submittedAt": "2026-11-20T02:30:00Z", "createdAt": "2026-11-20T02:00:00Z", "state": "APPROVED", "body": "", "author": {"login": "alice"},
+          "comments": {"totalCount": 0, "nodes": []}},
+         {"__typename": "PullRequestReview", "submittedAt": "2026-11-20T02:45:00Z", "createdAt": "2026-11-20T02:45:00Z", "state": "COMMENTED", "body": "", "author": {"login": "dave"},
+          "comments": {"totalCount": 1, "nodes": [{"replyTo": {"id": "c1"}}]}},
+         {"__typename": "PullRequestReview", "submittedAt": null, "createdAt": "2026-11-20T02:50:00Z", "state": "PENDING", "body": "", "author": {"login": "me"},
+          "comments": {"totalCount": 1, "nodes": [{"replyTo": {"id": "c1"}}]}},
+         {"__typename": "PullRequestReview", "submittedAt": "2026-11-20T02:51:00Z", "createdAt": "2026-11-20T02:51:00Z", "state": "COMMENTED", "body": "", "author": {"login": "erin"},
+          "comments": {"totalCount": 2, "nodes": [{"replyTo": {"id": "c1"}}, {"replyTo": null}]}},
+         {"__typename": "PullRequestReview", "submittedAt": "2026-11-20T02:52:00Z", "createdAt": "2026-11-20T02:52:00Z", "state": "COMMENTED", "body": "see inline", "author": {"login": "frank"},
+          "comments": {"totalCount": 1, "nodes": [{"replyTo": {"id": "c1"}}]}}
        ]}}
     ]},
     "assigned": {"issueCount": 1, "nodes": [
@@ -76,7 +86,10 @@ func TestParseResponse_ConvertsEventsInTimeOrder(t *testing.T) {
 		{EventCommented, ghostLogin}, // author が null（削除済みアカウント）
 		{EventApproved, "alice"},     // createdAt ではなく submittedAt の 02:30 で並ぶ
 		{EventCommitted, "Bob B"},    // GitHub ユーザーに紐づかないコミットは author 名
+		{EventReplied, "dave"},       // 本文が無く、既存スレッドへの返信だけのレビュー
 		// PENDING のレビューは含まれない
+		{EventReviewed, "erin"},  // 返信と新しいスレッドを含むレビュー
+		{EventReviewed, "frank"}, // 本文のあるレビュー
 	}
 	if len(events) != len(want) {
 		t.Fatalf("len(Events) = %d, want %d: %+v", len(events), len(want), events)

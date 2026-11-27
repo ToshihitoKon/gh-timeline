@@ -309,7 +309,7 @@ func collapseEvents(events []github.Event) []displayEvent {
 			continue
 		}
 		switch ev.Type {
-		case github.EventCommented, github.EventCommitted, github.EventReviewed:
+		case github.EventCommented, github.EventCommitted, github.EventReviewed, github.EventReplied:
 			last.Count++
 			last.At = ev.At
 		case github.EventReviewRequested:
@@ -337,6 +337,8 @@ func actionLabel(ev displayEvent) string {
 		return "changes requested"
 	case github.EventReviewed:
 		return withCount("reviewed", ev.Count)
+	case github.EventReplied:
+		return withCount("replied", ev.Count)
 	case github.EventCommitted:
 		if ev.Count == 1 {
 			return "pushed 1 commit"
