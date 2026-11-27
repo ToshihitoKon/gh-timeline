@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -311,11 +312,38 @@ func TestExecGH_ReturnsStdoutWhenGHFails(t *testing.T) {
 }
 
 func TestExecGH_TimeoutSaysTimedOut(t *testing.T) {
-	// exec で置き換えないと、sh を止めても sleep が標準出力を開いたまま残り、Output が戻らない。
 	installFakeGHCommand(t, "exec sleep 10\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	_, err := ExecGH(ctx, "api", "graphql")
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("err = %v, want a timed out error wrapping context.DeadlineExceeded", err)
+	}
+}
+
+func TestExecGH_ReturnsAfterTimeoutWhenChildKeepsStdoutOpen(t *testing.T) {
+	// sleep を exec しないため、打ち切りで sh が止まっても sleep が標準出力を開いたまま残る。
+	pidFile := filepath.Join(t.TempDir(), "sleep.pid")
+	installFakeGHCommand(t, "sleep 60 &\necho $! > '"+pidFile+"'\nwait\n")
+
+	// sh が sleep を起こす前に打ち切ると確かめたい状況にならない。sandbox 下の macOS では sh の起動に
+	// 1 秒近くかかることがあるため、100 ミリ秒ではなく 2 秒待つ。
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := ExecGH(ctx, "api", "graphql")
+	elapsed := time.Since(start)
+
+	pid, readErr := os.ReadFile(pidFile)
+	if readErr != nil {
+		t.Fatalf("fake gh did not start sleep before the timeout: %v", readErr)
+	}
+	t.Cleanup(func() { _ = exec.Command("kill", strings.TrimSpace(string(pid))).Run() })
+
+	// 打ち切りで戻らなければ、sleep が終わる 60 秒後まで戻らない。
+	if elapsed > 30*time.Second {
+		t.Errorf("ExecGH returned after %v, want it to return soon after the timeout", elapsed)
+	}
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timed out") {
 		t.Errorf("err = %v, want a timed out error wrapping context.DeadlineExceeded", err)
 	}
