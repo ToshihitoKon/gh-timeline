@@ -79,26 +79,68 @@ type RenderOptions struct {
 // batches は古い順で渡し、先頭から readCount 件を既読、それより新しいものを未読として
 // 各行の左端の欄に印・丸・罫線を付ける。
 func RenderBatches(batches []timeline.Batch, readCount int, opts RenderOptions) string {
-	blocks := make([]string, 0, len(batches))
-	for i := len(batches) - 1; i >= 0; i-- {
-		var prev time.Time
-		if i > 0 {
-			prev = batches[i-1].CheckedAt
-		}
-		isUnread := i >= readCount
-		var lines []string
-		for _, l := range batchLines(batches[i], prev, opts) {
-			prefix := gutter(l.kind, isUnread)
-			bodyWidth := opts.Width
-			if opts.Width > 0 {
-				// 欄より狭い端末でも本文は 1 桁残す。0 にすると truncate が「切り詰めない」と扱うため。
-				bodyWidth = max(opts.Width-ansi.StringWidth(prefix), 1)
-			}
-			lines = append(lines, prefix+truncate(l.text, bodyWidth))
-		}
-		blocks = append(blocks, strings.Join(lines, "\n"))
+	var cache batchRenderCache
+	return cache.render(batches, readCount, opts)
+}
+
+// batchRenderCache は Batch ごとの描画結果を持ち、前回から描画のしかたも既読かどうかも
+// 変わっていない Batch を描き直さずに済ませる。Batch は追記されるだけで中身が変わらない前提で、
+// batches[i] の描画結果を blocks[i] に持つ。
+//
+// 保持する Batch の数に上限を設けるほうが単純だが、さかのぼって読める履歴が消えるため採らない。
+type batchRenderCache struct {
+	opts   RenderOptions
+	blocks []renderedBlock
+}
+
+type renderedBlock struct {
+	isUnread bool
+	text     string
+}
+
+// render は RenderBatches と同じ結果を返す。
+func (c *batchRenderCache) render(batches []timeline.Batch, readCount int, opts RenderOptions) string {
+	if opts != c.opts || len(c.blocks) > len(batches) {
+		c.opts = opts
+		c.blocks = nil
 	}
-	return strings.Join(blocks, "\n\n")
+	for i := range batches {
+		isUnread := i >= readCount
+		if i < len(c.blocks) && c.blocks[i].isUnread == isUnread {
+			continue
+		}
+		block := renderedBlock{isUnread: isUnread, text: renderBatchBlock(batches, i, isUnread, opts)}
+		if i < len(c.blocks) {
+			c.blocks[i] = block
+		} else {
+			c.blocks = append(c.blocks, block)
+		}
+	}
+
+	texts := make([]string, len(c.blocks))
+	for i, b := range c.blocks {
+		texts[len(c.blocks)-1-i] = b.text
+	}
+	return strings.Join(texts, "\n\n")
+}
+
+// renderBatchBlock は batches[i] を区切り行付きで、各行の左端に欄を付けて描画する。
+func renderBatchBlock(batches []timeline.Batch, i int, isUnread bool, opts RenderOptions) string {
+	var prev time.Time
+	if i > 0 {
+		prev = batches[i-1].CheckedAt
+	}
+	var lines []string
+	for _, l := range batchLines(batches[i], prev, opts) {
+		prefix := gutter(l.kind, isUnread)
+		bodyWidth := opts.Width
+		if opts.Width > 0 {
+			// 欄より狭い端末でも本文は 1 桁残す。0 にすると truncate が「切り詰めない」と扱うため。
+			bodyWidth = max(opts.Width-ansi.StringWidth(prefix), 1)
+		}
+		lines = append(lines, prefix+truncate(l.text, bodyWidth))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // gutter は左端の欄を返す。区切り行は丸と罫線の列から書き始め、まとまりの始まりが
