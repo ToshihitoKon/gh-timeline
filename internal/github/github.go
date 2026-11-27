@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -179,17 +180,31 @@ func (c *Client) Search(ctx context.Context, since time.Time, seenKeys map[strin
 // 初めて見る PR では範囲外として捨てられるため。表示済みの PR は新しいコミットを oid で見分けるので要らない。
 // 取得できなかった PR は committedDate のままにし、検索自体は失敗させない。
 // 取得した push をキャッシュしないのは、検索が成功すれば PR は表示済みになり、同じ PR で取り直すことがないため。
+//
+// 取得は並列に行う。結果は PR ごとの枠に書き、全件の取得を待ってから反映するため、ロックは取らない。
 func (c *Client) retimeCommitsByPush(ctx context.Context, items []Item, seenKeys map[string]bool) {
-	for i := range items {
-		item := &items[i]
-		if !needsPushTimes(*item) || seenKeys[item.Key()] {
+	pushesByItem := make([][]push, len(items))
+	slots := make(chan struct{}, pushFetchConcurrency)
+	var wg sync.WaitGroup
+	for i, item := range items {
+		if !needsPushTimes(item) || seenKeys[item.Key()] {
 			continue
 		}
-		pushes, err := fetchPushes(ctx, c.run, item.headRepo, item.headRef)
-		if err != nil {
-			continue
+		wg.Go(func() {
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			pushes, err := fetchPushes(ctx, c.run, item.headRepo, item.headRef)
+			if err != nil {
+				return
+			}
+			pushesByItem[i] = pushes
+		})
+	}
+	wg.Wait()
+	for i, pushes := range pushesByItem {
+		if len(pushes) > 0 {
+			applyPushTimes(&items[i], pushes)
 		}
-		applyPushTimes(item, pushes)
 	}
 }
 

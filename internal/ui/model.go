@@ -42,6 +42,7 @@ type pollTickMsg struct{ seq int }
 
 type fetchedMsg struct {
 	startedAt time.Time
+	since     time.Time
 	result    github.SearchResult
 	err       error
 }
@@ -53,9 +54,11 @@ type Model struct {
 	interval time.Duration
 	showURL  bool
 
-	viewer        string
-	batches       []timeline.Batch
-	watchingSince time.Time // 初回ポーリングでさかのぼった始点。更新が無いときの案内に使う
+	viewer  string
+	batches []timeline.Batch
+	// watchingSince は初めて成功した取得の検索範囲の始点で、ゼロなら取得に一度も成功していない。
+	// 更新が無いときの案内と、初回に取得した分を既読にするのに使う。
+	watchingSince time.Time
 	lastCheckedAt time.Time
 	nextPollAt    time.Time
 	lastErr       error
@@ -66,7 +69,6 @@ type Model struct {
 	// readBatchCount は batches の古い側から何件を既読にしたか。既読にする操作は
 	// 「表示中の最新まで」の一種類だけなので、Batch ごとに既読かどうかを持たずに済む。
 	readBatchCount int
-	hasFetched     bool // 取得に一度でも成功したか。初回に取得した分を既読にするために使う
 
 	renderCache batchRenderCache
 
@@ -98,17 +100,14 @@ func (m Model) Init() tea.Cmd {
 // Apply まで含めて tracker を触るのは Update（メインの goroutine）の中だけにする。
 func (m *Model) startFetch(now time.Time) tea.Cmd {
 	m.isFetching = true
-	since := m.tracker.Since(now)
-	if m.watchingSince.IsZero() {
-		m.watchingSince = since
-	}
+	since := m.tracker.Since()
 	seenKeys := m.tracker.SeenKeys()
 	fetcher := m.fetcher
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), FetchTimeout)
 		defer cancel()
 		result, err := fetcher.Search(ctx, since, seenKeys)
-		return fetchedMsg{startedAt: now, result: result, err: err}
+		return fetchedMsg{startedAt: now, since: since, result: result, err: err}
 	}
 }
 
@@ -185,10 +184,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if hasUpdates {
 				m.batches = append(m.batches, batch)
 			}
-			isFirstFetch := !m.hasFetched
+			isFirstFetch := m.watchingSince.IsZero()
 			if isFirstFetch {
 				m.readBatchCount = len(m.batches)
-				m.hasFetched = true
+				m.watchingSince = msg.since
 			}
 			// 初回の取得では更新が無くても「Loading...」を「No updates since ...」に
 			// 置き換える必要があるため描き直す。
