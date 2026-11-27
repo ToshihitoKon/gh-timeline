@@ -1,6 +1,7 @@
 package github
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -59,6 +60,36 @@ func TestConvertEvent_CrossReferenceKeepsSource(t *testing.T) {
 func TestConvertEvent_SkipsUnknownType(t *testing.T) {
 	if got, ok := convertEvent(rawEvent{Typename: "LabeledEvent"}); ok {
 		t.Errorf("convertEvent(LabeledEvent) = %+v, true; want false", got)
+	}
+}
+
+func TestDropClosedByMerge_DropsClosedRecordedWithMerge(t *testing.T) {
+	mergedAt := time.Date(2026, 11, 27, 15, 20, 33, 0, time.UTC)
+	tests := []struct {
+		name       string
+		closedAt   time.Time
+		shouldKeep bool
+	}{
+		{"same time as merge", mergedAt, false},
+		{"one second after merge", mergedAt.Add(time.Second), false},
+		{"at the end of the window", mergedAt.Add(closedByMergeWindow), false},
+		{"after the window", mergedAt.Add(closedByMergeWindow + time.Second), true},
+		{"closed before merge and reopened", mergedAt.Add(-time.Hour), true},
+	}
+	for _, tt := range tests {
+		events := []Event{
+			{Type: EventMerged, Actor: "alice", At: mergedAt},
+			{Type: EventClosed, Actor: "alice", At: tt.closedAt},
+		}
+		sortByTime(events)
+		got := dropClosedByMerge(events)
+		hasClosed := slices.ContainsFunc(got, func(ev Event) bool { return ev.Type == EventClosed })
+		if hasClosed != tt.shouldKeep {
+			t.Errorf("%s: closed kept = %v, want %v (events %+v)", tt.name, hasClosed, tt.shouldKeep, got)
+		}
+		if !slices.ContainsFunc(got, func(ev Event) bool { return ev.Type == EventMerged }) {
+			t.Errorf("%s: merged dropped: %+v", tt.name, got)
+		}
 	}
 }
 

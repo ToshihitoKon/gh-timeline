@@ -211,7 +211,13 @@ func sortByTime(events []Event) {
 	slices.SortStableFunc(events, func(a, b Event) int { return a.At.Compare(b.At) })
 }
 
-// dropClosedByMerge は、マージ時に GitHub が MergedEvent と同時に記録する ClosedEvent を除く。
+// closedByMergeWindow は、MergedEvent からこの時間内に記録された ClosedEvent をマージに伴うものとみなす幅。
+// GitHub は ClosedEvent を MergedEvent の 1 秒後に記録することがある。
+// 時刻は秒単位のため、観測した 1 秒の差に余裕を持たせて 5 秒にした。
+// マージ済みの PR は開き直せず、マージより後に別の close は起きないため、幅を広げても残すべき closed を消すことはない。
+const closedByMergeWindow = 5 * time.Second
+
+// dropClosedByMerge は、マージ時に GitHub が MergedEvent と同時か直後に記録する ClosedEvent を除く。
 // "closed" まで出すと、マージとは別に閉じられたように読めるため。
 // 並び順で「merged の直後の closed」を探さず時刻で照らし合わせるのは、同時刻の 2 件の順序が決まっていないため。
 // マージ済みの PR の closed をすべて除かないのは、マージ前に閉じて開き直した回の closed を残すため。
@@ -223,7 +229,10 @@ func dropClosedByMerge(events []Event) []Event {
 		}
 	}
 	return slices.DeleteFunc(events, func(ev Event) bool {
-		return ev.Type == EventClosed && slices.ContainsFunc(mergedAts, ev.At.Equal)
+		return ev.Type == EventClosed && slices.ContainsFunc(mergedAts, func(mergedAt time.Time) bool {
+			sinceMerge := ev.At.Sub(mergedAt)
+			return sinceMerge >= 0 && sinceMerge <= closedByMergeWindow
+		})
 	})
 }
 
