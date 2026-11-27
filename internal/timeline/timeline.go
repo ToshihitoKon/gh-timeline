@@ -34,15 +34,9 @@ type Entry struct {
 	Events []github.Event
 }
 
-// shownAt は Entry を並べる時刻。表示するイベントのうち最も新しいものの時刻。
+// shownAt は Entry を並べる時刻。Events は古い順なので、最後のイベントが最も新しい。
 func (e Entry) shownAt() time.Time {
-	latest := e.Events[0].At
-	for _, ev := range e.Events[1:] {
-		if ev.At.After(latest) {
-			latest = ev.At
-		}
-	}
-	return latest
+	return e.Events[len(e.Events)-1].At
 }
 
 // Batch は 1 回のポーリングで見つかった更新のまとまり。
@@ -84,15 +78,18 @@ func NewTracker(firstSince time.Time) *Tracker {
 	return &Tracker{firstSince: firstSince.Truncate(time.Second), seen: map[string]*seenItem{}}
 }
 
+// FirstSince は初回のポーリングで検索する範囲の始点を返す。
+func (t *Tracker) FirstSince() time.Time {
+	return t.firstSince
+}
+
 // Since は次のポーリングで検索する範囲の始点を返す。
 //
 // 検索は updated:>= に秒単位の時刻を渡すため、イベントの時刻と比べる始点も秒に切り詰めて検索と揃える。
 func (t *Tracker) Since() time.Time {
-	if t.lastStartedAt.IsZero() {
-		return t.firstSince
-	}
 	since := t.lastStartedAt.Add(-searchLagOverlap).Truncate(time.Second)
-	// -since が searchLagOverlap より短いと、初回の始点より前の更新を新着として出してしまう
+	// 成功したポーリングがまだ無く lastStartedAt がゼロのときも、ここで初回の始点になる。
+	// -since が searchLagOverlap より短いときに切り上げないと、初回の始点より前の更新を新着として出してしまう。
 	if since.Before(t.firstSince) {
 		return t.firstSince
 	}

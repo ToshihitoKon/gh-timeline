@@ -11,27 +11,38 @@ import (
 	"time"
 )
 
-// pushedPRResponse は、コミット 3 件と、それより前のコメント 1 件を持つ PR の検索結果を返す。
-// コミットは 01:00 台に作られ、updatedAt（push の時刻）は 03:00。
-func pushedPRResponse(updatedAt string) string {
+// prNode は、01:00 台に作られたコミット c1〜c3 を持つ PR の検索結果のノードを作る。
+// earlierEvents は、コミットより前に並べる timelineItems のノード。
+func prNode(number int, updatedAt, headRepo, headRef string, earlierEvents ...string) string {
+	events := slices.Concat(earlierEvents, []string{
+		`{"__typename": "PullRequestCommit", "commit": {"oid": "c1", "committedDate": "2026-11-20T01:00:00Z", "author": {"user": {"login": "me"}}}}`,
+		`{"__typename": "PullRequestCommit", "commit": {"oid": "c2", "committedDate": "2026-11-20T01:10:00Z", "author": {"user": {"login": "me"}}}}`,
+		`{"__typename": "PullRequestCommit", "commit": {"oid": "c3", "committedDate": "2026-11-20T01:20:00Z", "author": {"user": {"login": "me"}}}}`,
+	})
+	return fmt.Sprintf(`
+	    {"__typename": "PullRequest", "number": %d, "title": "PR %d", "url": "https://github.com/o/r/pull/%d",
+	     "state": "OPEN", "updatedAt": %q, "repository": {"nameWithOwner": "o/r"},
+	     "headRefName": %q, "headRepository": {"nameWithOwner": %q},
+	     "timelineItems": {"nodes": [%s]},
+	     "reviews": {"nodes": []}}`, number, number, number, updatedAt, headRef, headRepo, strings.Join(events, ",\n"))
+}
+
+// authoredResponse は、authored の検索だけが nodes にヒットした検索の応答を作る。
+func authoredResponse(nodes ...string) string {
 	return fmt.Sprintf(`{"data": {
 	  "viewer": {"login": "me"},
-	  "authored": {"issueCount": 1, "nodes": [
-	    {"__typename": "PullRequest", "number": 1, "title": "Add feature", "url": "https://github.com/o/r/pull/1",
-	     "state": "OPEN", "updatedAt": %q, "repository": {"nameWithOwner": "o/r"},
-	     "headRefName": "feature/x", "headRepository": {"nameWithOwner": "fork/r"},
-	     "timelineItems": {"nodes": [
-	       {"__typename": "IssueComment", "createdAt": "2026-11-20T02:00:00Z", "author": {"login": "alice"}},
-	       {"__typename": "PullRequestCommit", "commit": {"oid": "c1", "committedDate": "2026-11-20T01:00:00Z", "author": {"user": {"login": "me"}}}},
-	       {"__typename": "PullRequestCommit", "commit": {"oid": "c2", "committedDate": "2026-11-20T01:10:00Z", "author": {"user": {"login": "me"}}}},
-	       {"__typename": "PullRequestCommit", "commit": {"oid": "c3", "committedDate": "2026-11-20T01:20:00Z", "author": {"user": {"login": "me"}}}}
-	     ]},
-	     "reviews": {"nodes": []}}
-	  ]},
+	  "authored": {"issueCount": %d, "nodes": [%s]},
 	  "assigned": {"issueCount": 0, "nodes": []},
 	  "reviewRequested": {"issueCount": 0, "nodes": []},
 	  "reviewedBy": {"issueCount": 0, "nodes": []}
-	}}`, updatedAt)
+	}}`, len(nodes), strings.Join(nodes, ","))
+}
+
+// pushedPRResponse は、fork のブランチから出した PR 1 件の検索結果を返す。PR はコミット 3 件と、
+// それより前の 02:00 のコメント 1 件を持つ。テストでは updatedAt を push の時刻（03:00 など）にする。
+func pushedPRResponse(updatedAt string) string {
+	comment := `{"__typename": "IssueComment", "createdAt": "2026-11-20T02:00:00Z", "author": {"login": "alice"}}`
+	return authoredResponse(prNode(1, updatedAt, "fork/r", "feature/x", comment))
 }
 
 // activity API は新しい順に返す。c1 と c2 は 02:30 の push、c3 は 02:59 の push に含まれる。
@@ -257,28 +268,13 @@ func TestClientSearch_RefetchesWhileNewestCommitIsMissingFromActivity(t *testing
 	}
 }
 
-// prsResponse は、pushedPRResponse と同じコミットを持つ PR を n 件返す検索結果を作る。
+// prsResponse は、同じリポジトリの別々のブランチから出した PR を n 件返す検索結果を作る。
 func prsResponse(n int) string {
 	nodes := make([]string, n)
 	for i := range nodes {
-		nodes[i] = fmt.Sprintf(`
-	    {"__typename": "PullRequest", "number": %d, "title": "PR %d", "url": "https://github.com/o/r/pull/%d",
-	     "state": "OPEN", "updatedAt": "2026-11-20T03:00:00Z", "repository": {"nameWithOwner": "o/r"},
-	     "headRefName": "feature/%d", "headRepository": {"nameWithOwner": "o/r"},
-	     "timelineItems": {"nodes": [
-	       {"__typename": "PullRequestCommit", "commit": {"oid": "c1", "committedDate": "2026-11-20T01:00:00Z", "author": {"user": {"login": "me"}}}},
-	       {"__typename": "PullRequestCommit", "commit": {"oid": "c2", "committedDate": "2026-11-20T01:10:00Z", "author": {"user": {"login": "me"}}}},
-	       {"__typename": "PullRequestCommit", "commit": {"oid": "c3", "committedDate": "2026-11-20T01:20:00Z", "author": {"user": {"login": "me"}}}}
-	     ]},
-	     "reviews": {"nodes": []}}`, i+1, i+1, i+1, i+1)
+		nodes[i] = prNode(i+1, "2026-11-20T03:00:00Z", "o/r", fmt.Sprintf("feature/%d", i+1))
 	}
-	return fmt.Sprintf(`{"data": {
-	  "viewer": {"login": "me"},
-	  "authored": {"issueCount": %d, "nodes": [%s]},
-	  "assigned": {"issueCount": 0, "nodes": []},
-	  "reviewRequested": {"issueCount": 0, "nodes": []},
-	  "reviewedBy": {"issueCount": 0, "nodes": []}
-	}}`, n, strings.Join(nodes, ","))
+	return authoredResponse(nodes...)
 }
 
 func TestClientSearch_FetchesPushesOfEachNewPR(t *testing.T) {
