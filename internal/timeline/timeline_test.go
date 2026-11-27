@@ -111,18 +111,67 @@ func TestTrackerApply_ShowsOnlyUnshownEvents(t *testing.T) {
 	}
 }
 
-func TestTrackerApply_ShowsLatePushedCommitOfSeenItem(t *testing.T) {
+func TestTrackerApply_ShowsCommitPushedLaterToSeenItem(t *testing.T) {
 	tr := NewTracker(at(-60))
 	tr.Apply(at(0), []github.Item{pr(1, -10, comment("c1", "alice", -10))})
 
-	// 12:20 に、手元で 10:00 にコミットしたものを push し、直後に CI のボットがコメントした。
-	// コミットの時刻は前回表示した updatedAt よりも検索範囲の始点よりも古い。
-	batch := tr.Apply(at(25), []github.Item{pr(1, 21, comment("c1", "alice", -10), commit("abc", -120), comment("c2", "ci-bot", 21))})
+	// 12:20 に、手元で 10:00 にコミットしたものを push した。Client がコミットの時刻を push の時刻に置き換える。
+	batch := tr.Apply(at(25), []github.Item{pr(1, 20, comment("c1", "alice", -10), commit("abc", 20))})
 	if len(batch.Entries) != 1 {
 		t.Fatalf("entries = %d, want 1", len(batch.Entries))
 	}
-	if got := eventIDs(batch.Entries[0].Events); len(got) != 2 || got[0] != "abc" || got[1] != "c2" {
-		t.Errorf("event IDs = %v, want [abc c2]", got)
+	if got := eventIDs(batch.Entries[0].Events); len(got) != 1 || got[0] != "abc" {
+		t.Errorf("event IDs = %v, want [abc]", got)
+	}
+}
+
+func TestTrackerApply_IgnoresOldCommitShiftedIntoFetchedRangeBySquash(t *testing.T) {
+	tr := NewTracker(at(-60))
+	tr.Apply(at(0), []github.Item{pr(1, -5, commit("c2", -5), commit("c3", -5))})
+
+	// c2 と c3 を d にまとめて force push し、10:00 に push した c1 が取得する直近の件数に入ってきた。
+	batch := tr.Apply(at(5), []github.Item{pr(1, 3, commit("c1", -120), commit("d", 3))})
+	if got := eventIDs(batch.Entries[0].Events); len(got) != 1 || got[0] != "d" {
+		t.Errorf("event IDs = %v, want only d (c1 was pushed before the item was first seen)", got)
+	}
+}
+
+// pushTimeUnknownCommit は、push の時刻に置き換えられず committedDate のままのコミット。
+func pushTimeUnknownCommit(oid string, committedMin int) github.Event {
+	ev := commit(oid, committedMin)
+	ev.IsPushTimeUnknown = true
+	return ev
+}
+
+func TestTrackerApply_ShowsCommitOnceItsPushTimeIsKnown(t *testing.T) {
+	tr := NewTracker(at(-60))
+	// push を取得できず、10:00 の committedDate は始点より前のため出さない。
+	first := tr.Apply(at(0), []github.Item{pr(1, -5, pushTimeUnknownCommit("abc", -120), comment("c1", "alice", -3))})
+	if got := eventIDs(first.Entries[0].Events); len(got) != 1 || got[0] != "c1" {
+		t.Fatalf("first event IDs = %v, want only c1", got)
+	}
+
+	// 次のポーリングで push を取得でき、11:55 に push されたと分かった。
+	second := tr.Apply(at(5), []github.Item{pr(1, -5, commit("abc", -5), comment("c1", "alice", -3))})
+	if len(second.Entries) != 1 {
+		t.Fatalf("second entries = %d, want 1", len(second.Entries))
+	}
+	if got := eventIDs(second.Entries[0].Events); len(got) != 1 || got[0] != "abc" {
+		t.Errorf("second event IDs = %v, want [abc]", got)
+	}
+}
+
+func TestTrackerApply_RemembersShownCommitWithUnknownPushTime(t *testing.T) {
+	tr := NewTracker(at(-60))
+	// push を取得できなかったが、committedDate が始点以降のため出す。
+	first := tr.Apply(at(0), []github.Item{pr(1, -5, pushTimeUnknownCommit("abc", -5))})
+	if got := eventIDs(first.Entries[0].Events); len(got) != 1 || got[0] != "abc" {
+		t.Fatalf("first event IDs = %v, want [abc]", got)
+	}
+
+	second := tr.Apply(at(5), []github.Item{pr(1, -5, pushTimeUnknownCommit("abc", -5))})
+	if len(second.Entries) != 0 {
+		t.Errorf("second entries = %+v, want none (abc was already shown)", second.Entries)
 	}
 }
 
@@ -188,13 +237,13 @@ func TestTrackerApply_ForgetsItemsFarBeforeSearchRange(t *testing.T) {
 	tr.Apply(at(60), nil)
 	// 始点は 12:50 で、updatedAt の 11:50 は始点より前だが、seenRetention の内なので残す
 	tr.Apply(at(100), nil)
-	if !tr.SeenKeys()["o/r#1"] {
+	if tr.seen["o/r#1"] == nil {
 		t.Fatal("o/r#1 was forgotten within seenRetention")
 	}
 
 	// 始点は 13:30
 	tr.Apply(at(200), nil)
-	if tr.SeenKeys()["o/r#1"] {
+	if tr.seen["o/r#1"] != nil {
 		t.Error("o/r#1 is still remembered after falling seenRetention behind the search range")
 	}
 }

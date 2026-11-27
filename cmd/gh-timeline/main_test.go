@@ -47,7 +47,7 @@ func TestCheckFlags_RejectsNegativeSince(t *testing.T) {
 // hangingFetcher は gh が戻らない状況を模し、ctx が終わるまで返らない。
 type hangingFetcher struct{}
 
-func (hangingFetcher) Search(ctx context.Context, _ time.Time, _ map[string]bool) (github.SearchResult, error) {
+func (hangingFetcher) Search(ctx context.Context, _ time.Time) (github.SearchResult, error) {
 	<-ctx.Done()
 	return github.SearchResult{}, errors.New("signal: killed")
 }

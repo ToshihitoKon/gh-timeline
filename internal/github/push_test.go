@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -73,7 +74,7 @@ func commitTimes(t *testing.T, item Item) []string {
 
 func TestClientSearch_RetimesCommitsToPushTime(t *testing.T) {
 	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: pushActivityResponse}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now(), nil)
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +98,7 @@ func TestClientSearch_TimesCommitsOfBranchCreationByThatPush(t *testing.T) {
 	  {"after": "c2", "timestamp": "2026-11-20T02:30:00Z", "activity_type": "branch_creation"}
 	]`
 	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: activity}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now(), nil)
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +116,7 @@ func TestClientSearch_SkipsPushWhoseHeadIsNotInPR(t *testing.T) {
 	  {"after": "c1", "timestamp": "2026-11-20T02:30:00Z", "activity_type": "branch_creation"}
 	]`
 	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: activity}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now(), nil)
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +129,7 @@ func TestClientSearch_RetimesFirstSeenPREvenWhenACommentFollowsThePush(t *testin
 	// CI のボットが push の直後にコメントし、updatedAt がコメントの時刻になった。
 	response := strings.Replace(pushedPRResponse("2026-11-20T03:00:00Z"), `"createdAt": "2026-11-20T02:00:00Z"`, `"createdAt": "2026-11-20T03:00:00Z"`, 1)
 	gh := &fakeGH{searchResponse: response, activityResponse: pushActivityResponse}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now(), nil)
+	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,28 +138,116 @@ func TestClientSearch_RetimesFirstSeenPREvenWhenACommentFollowsThePush(t *testin
 	}
 }
 
-func TestClientSearch_SkipsPushTimesForSeenPR(t *testing.T) {
+// pushTimeUnknownCommits は、push の時刻に置き換えられなかったコミットの ID を返す。
+func pushTimeUnknownCommits(item Item) []string {
+	var ids []string
+	for _, ev := range item.Events {
+		if ev.Type == EventCommitted && ev.IsPushTimeUnknown {
+			ids = append(ids, ev.ID)
+		}
+	}
+	return ids
+}
+
+func TestClientSearch_ReusesPushesWhileNewestCommitIsUnchanged(t *testing.T) {
 	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: pushActivityResponse}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now(), map[string]bool{"o/r#1": true})
-	if err != nil {
-		t.Fatal(err)
+	client := NewClient(gh.run, false)
+	for poll := range 2 {
+		got, err := client.Search(context.Background(), time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := strings.Join(commitTimes(t, got.Items[0]), " "), "02:30 02:30 02:59"; got != want {
+			t.Errorf("poll %d: commit times = %s, want %s", poll, got, want)
+		}
 	}
-	if len(gh.activityCalls) != 0 {
-		t.Errorf("activity calls = %v, want none", gh.activityCalls)
-	}
-	if got, want := strings.Join(commitTimes(t, got.Items[0]), " "), "01:00 01:10 01:20"; got != want {
-		t.Errorf("commit times = %s, want committedDate %s", got, want)
+	if len(gh.activityCalls) != 1 {
+		t.Errorf("activity calls = %d, want 1 (cached while the head stays at c3)", len(gh.activityCalls))
 	}
 }
 
-func TestClientSearch_KeepsCommittedDateWhenActivityFails(t *testing.T) {
-	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityErr: errors.New("HTTP 404")}
-	got, err := NewClient(gh.run, false).Search(context.Background(), time.Now(), nil)
+func TestClientSearch_RetimesCommitPushedLaterToShownPR(t *testing.T) {
+	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: pushActivityResponse}
+	client := NewClient(gh.run, false)
+	if _, err := client.Search(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	// PR を表示した後の 03:30 に、01:30 に手元でコミットしておいた c4 を push した。
+	c3 := `"oid": "c3", "committedDate": "2026-11-20T01:20:00Z", "author": {"user": {"login": "me"}}}}`
+	c4 := `, {"__typename": "PullRequestCommit", "commit": {"oid": "c4", "committedDate": "2026-11-20T01:30:00Z", "author": {"user": {"login": "me"}}}}`
+	gh.searchResponse = strings.Replace(pushedPRResponse("2026-11-20T03:30:00Z"), c3, c3+c4, 1)
+	gh.activityResponse = `[{"after": "c4", "timestamp": "2026-11-20T03:30:00Z", "activity_type": "push"},` + strings.TrimPrefix(pushActivityResponse, "[")
+	got, err := client.Search(context.Background(), time.Now())
 	if err != nil {
-		t.Fatalf("Search err = %v, want nil (activity failure is ignored)", err)
+		t.Fatal(err)
+	}
+	if len(gh.activityCalls) != 2 {
+		t.Errorf("activity calls = %d, want 2 (fetched again after the head moved to c4)", len(gh.activityCalls))
+	}
+	if got, want := strings.Join(commitTimes(t, got.Items[0]), " "), "02:30 02:30 02:59 03:30"; got != want {
+		t.Errorf("commit times = %s, want %s", got, want)
+	}
+}
+
+func TestClientSearch_ReportsAndMarksCommitsWhenActivityFails(t *testing.T) {
+	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityErr: errors.New("HTTP 404")}
+	client := NewClient(gh.run, false)
+	got, err := client.Search(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("Search err = %v, want nil (activity failure does not fail the search)", err)
+	}
+	if want := []string{"push times unavailable for 1 pull request"}; !slices.Equal(got.PartialErrors, want) {
+		t.Errorf("PartialErrors = %q, want %q", got.PartialErrors, want)
 	}
 	if got, want := strings.Join(commitTimes(t, got.Items[0]), " "), "01:00 01:10 01:20"; got != want {
 		t.Errorf("commit times = %s, want committedDate %s", got, want)
+	}
+	if got, want := pushTimeUnknownCommits(got.Items[0]), []string{"c1", "c2", "c3"}; !slices.Equal(got, want) {
+		t.Errorf("commits with unknown push time = %v, want %v", got, want)
+	}
+
+	// 失敗した結果はキャッシュせず、次の検索で取り直す。
+	gh.activityErr, gh.activityResponse = nil, pushActivityResponse
+	got, err = client.Search(context.Background(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.activityCalls) != 2 {
+		t.Errorf("activity calls = %d, want 2", len(gh.activityCalls))
+	}
+	if len(got.PartialErrors) != 0 {
+		t.Errorf("PartialErrors = %q, want none", got.PartialErrors)
+	}
+	if got := pushTimeUnknownCommits(got.Items[0]); len(got) != 0 {
+		t.Errorf("commits with unknown push time = %v, want none", got)
+	}
+}
+
+func TestClientSearch_RefetchesWhileNewestCommitIsMissingFromActivity(t *testing.T) {
+	// c3 の push が、まだ activity API に反映されていない。
+	activity := `[{"after": "c2", "timestamp": "2026-11-20T02:30:00Z", "activity_type": "branch_creation"}]`
+	gh := &fakeGH{searchResponse: pushedPRResponse("2026-11-20T03:00:00Z"), activityResponse: activity}
+	client := NewClient(gh.run, false)
+	got, err := client.Search(context.Background(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.PartialErrors) != 0 {
+		t.Errorf("PartialErrors = %q, want none (the fetch succeeded)", got.PartialErrors)
+	}
+	if got, want := strings.Join(commitTimes(t, got.Items[0]), " "), "01:20 02:30 02:30"; got != want {
+		t.Errorf("commit times = %s, want %s (c3 keeps its committedDate)", got, want)
+	}
+	if got, want := pushTimeUnknownCommits(got.Items[0]), []string{"c3"}; !slices.Equal(got, want) {
+		t.Errorf("commits with unknown push time = %v, want %v", got, want)
+	}
+
+	if _, err := client.Search(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.activityCalls) != 2 {
+		t.Errorf("activity calls = %d, want 2 (not cached until c3 is retimed)", len(gh.activityCalls))
 	}
 }
 
@@ -237,7 +326,7 @@ func TestClientSearch_FetchesPushesInParallelUpToLimit(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		got, err = NewClient(gh.run, false).Search(context.Background(), time.Now(), nil)
+		got, err = NewClient(gh.run, false).Search(context.Background(), time.Now())
 	}()
 
 	select {

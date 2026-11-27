@@ -99,7 +99,7 @@ func runDump(fetcher ui.Fetcher, tracker *timeline.Tracker, showURL bool, timeou
 
 	now := time.Now()
 	since := tracker.Since()
-	result, err := fetcher.Search(ctx, since, tracker.SeenKeys())
+	result, err := fetcher.Search(ctx, since)
 	if err != nil {
 		// gh が打ち切られたときのエラーは "signal: killed" だけで、時間切れだと読み取れない。
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {

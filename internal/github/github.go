@@ -65,6 +65,8 @@ type Event struct {
 	Actor  string // 行った人の login。コミットで GitHub ユーザーに紐づかない場合は author 名
 	Target string // レビュー依頼先・アサイン先など、対象がある種類のみ
 	At     time.Time
+	// IsPushTimeUnknown は、コミットの At を push の時刻に置き換えられず、committedDate のままであることを示す。
+	IsPushTimeUnknown bool
 }
 
 // Item は検索でヒットした PR / issue。
@@ -96,8 +98,9 @@ type SearchResult struct {
 	// Truncated は、いずれかの検索条件で SearchPageSize を超えてヒットし、
 	// 取りこぼしがあることを示す。
 	Truncated bool
-	// PartialErrors は、結果の一部を取得できなかったときの GraphQL のエラーメッセージ（重複を除く）。
-	// SAML SSO を強制する org の PR / issue に gh のトークンが認可されていない場合などに出る。
+	// PartialErrors は、結果の一部を取得できなかったときのメッセージ（重複を除く）。
+	// GraphQL のエラーは、SAML SSO を強制する org の PR / issue に gh のトークンが認可されていない場合などに出る。
+	// push を取得できなかった PR があれば、その件数も載せる。
 	PartialErrors []string
 }
 
@@ -134,17 +137,19 @@ func ExecGH(ctx context.Context, args ...string) ([]byte, error) {
 type Client struct {
 	run                Runner
 	includeTeamReviews bool // 所属チーム宛てのレビュー依頼も対象にするか
+
+	mu        sync.Mutex // pushCache を守る
+	pushCache map[branchKey]branchPushes
 }
 
 // NewClient は Client を作る。
 func NewClient(run Runner, includeTeamReviews bool) *Client {
-	return &Client{run: run, includeTeamReviews: includeTeamReviews}
+	return &Client{run: run, includeTeamReviews: includeTeamReviews, pushCache: map[branchKey]branchPushes{}}
 }
 
 // Search は since 以降に更新された、自分が関わる PR / issue を取得する。
-// seenKeys は表示済みの PR / issue の Key で、これに含まれない PR だけコミットの時刻を push の時刻に置き換える。
 // gh が失敗しても、応答に data があれば部分的な結果として返す。
-func (c *Client) Search(ctx context.Context, since time.Time, seenKeys map[string]bool) (SearchResult, error) {
+func (c *Client) Search(ctx context.Context, since time.Time) (SearchResult, error) {
 	args := []string{"api", "graphql", "-f", "query=" + searchQuery, "-F", fmt.Sprintf("first=%d", SearchPageSize)}
 	for name, q := range searchQueries(since, c.includeTeamReviews) {
 		args = append(args, "-f", name+"="+q)
@@ -158,42 +163,75 @@ func (c *Client) Search(ctx context.Context, since time.Time, seenKeys map[strin
 		}
 		return SearchResult{}, err
 	}
-	c.retimeCommitsByPush(ctx, result.Items, seenKeys)
+	if numFailed := c.retimeCommitsByPush(ctx, result.Items); numFailed > 0 {
+		result.PartialErrors = append(result.PartialErrors, pushTimesUnavailableMessage(numFailed))
+	}
 	return result, nil
 }
 
-// retimeCommitsByPush は、初めて見る PR のコミットの時刻を push された時刻に置き換える。
+// retimeCommitsByPush は、PR のコミットの時刻を push された時刻に置き換え、push を取得できなかった PR の数を返す。
 //
-// committedDate は手元でコミットした時刻で、後からまとめて push すると検索範囲の始点より古くなり、
-// 初めて見る PR では範囲外として捨てられるため。表示済みの PR は新しいコミットを oid で見分けるので要らない。
+// committedDate は手元でコミットした時刻で、後からまとめて push すると push より古い時刻になる。
+// 初めて見る PR では検索範囲の始点より前として捨てられ、表示済みの PR では古い時刻で並ぶため。
 // 取得できなかった PR は committedDate のままにし、検索自体は失敗させない。
-// 取得した push をキャッシュしないのは、検索が成功すれば PR は表示済みになり、同じ PR で取り直すことがないため。
 //
-// 取得は並列に行う。結果は PR ごとの枠に書き、全件の取得を待ってから反映するため、ロックは取らない。
-func (c *Client) retimeCommitsByPush(ctx context.Context, items []Item, seenKeys map[string]bool) {
+// 取得した push はブランチごとにキャッシュし、ブランチの最新のコミットが変わったときだけ取り直す。
+// 最新のコミットまで置き換えられなかったときはキャッシュしない。activity API への反映が遅れて
+// 直近の push がまだ載っていないことがあり、キャッシュすると次の push まで置き換えられないため。
+//
+// 取得は並列に行う。結果は PR ごとの枠に書き、全件の取得を待ってから反映するため、枠への書き込みにロックは取らない。
+func (c *Client) retimeCommitsByPush(ctx context.Context, items []Item) (numFailed int) {
 	pushesByItem := make([][]push, len(items))
-	slots := make(chan struct{}, pushFetchConcurrency)
-	var wg sync.WaitGroup
+	errs := make([]error, len(items))
+	var fetchTargets []int // push を取得する items の添字
+
+	c.mu.Lock()
 	for i, item := range items {
-		if !needsPushTimes(item) || seenKeys[item.Key()] {
+		if !needsPushTimes(item) {
 			continue
 		}
+		if cached, ok := c.pushCache[branchOf(item)]; ok && cached.newestCommit == newestCommitID(item) {
+			pushesByItem[i] = cached.pushes
+			continue
+		}
+		fetchTargets = append(fetchTargets, i)
+	}
+	c.mu.Unlock()
+
+	slots := make(chan struct{}, pushFetchConcurrency)
+	var wg sync.WaitGroup
+	for _, i := range fetchTargets {
 		wg.Go(func() {
 			slots <- struct{}{}
 			defer func() { <-slots }()
-			pushes, err := fetchPushes(ctx, c.run, item.headRepo, item.headRef)
-			if err != nil {
-				return
-			}
-			pushesByItem[i] = pushes
+			pushesByItem[i], errs[i] = fetchPushes(ctx, c.run, items[i].headRepo, items[i].headRef)
 		})
 	}
 	wg.Wait()
-	for i, pushes := range pushesByItem {
-		if len(pushes) > 0 {
-			applyPushTimes(&items[i], pushes)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range items {
+		if !needsPushTimes(items[i]) {
+			continue
+		}
+		if errs[i] != nil {
+			numFailed++
+		}
+		newestCommit := newestCommitID(items[i])
+		if applyPushTimes(&items[i], pushesByItem[i]) {
+			c.pushCache[branchOf(items[i])] = branchPushes{newestCommit: newestCommit, pushes: pushesByItem[i]}
 		}
 	}
+	return numFailed
+}
+
+// pushTimesUnavailableMessage は、push を取得できなかった PR の数を知らせる PartialErrors のメッセージを返す。
+func pushTimesUnavailableMessage(numFailed int) string {
+	if numFailed == 1 {
+		return "push times unavailable for 1 pull request"
+	}
+	return fmt.Sprintf("push times unavailable for %d pull requests", numFailed)
 }
 
 // searchQueries は search.graphql の変数名ごとの検索クエリを返す。

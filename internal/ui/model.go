@@ -34,7 +34,7 @@ const chromeLines = 3
 
 // Fetcher は自分が関わる PR / issue を検索する。テストで差し替える。
 type Fetcher interface {
-	Search(ctx context.Context, since time.Time, seenKeys map[string]bool) (github.SearchResult, error)
+	Search(ctx context.Context, since time.Time) (github.SearchResult, error)
 }
 
 type pollTickMsg struct{ seq int }
@@ -97,12 +97,11 @@ func (m Model) Init() tea.Cmd {
 func (m *Model) startFetch(now time.Time) tea.Cmd {
 	m.isFetching = true
 	since := m.tracker.Since()
-	seenKeys := m.tracker.SeenKeys()
 	fetcher := m.fetcher
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), FetchTimeout)
 		defer cancel()
-		result, err := fetcher.Search(ctx, since, seenKeys)
+		result, err := fetcher.Search(ctx, since)
 		return fetchedMsg{startedAt: now, since: since, result: result, err: err}
 	}
 }
