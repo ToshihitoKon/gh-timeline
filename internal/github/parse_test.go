@@ -32,3 +32,21 @@ func TestConvertEvent_SkipsUnknownType(t *testing.T) {
 		t.Errorf("convertEvent(LabeledEvent) = %+v, true; want false", got)
 	}
 }
+
+func TestStripControl_ReplacesWhitespaceControlsWithSpace(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"Fix\tlogin", "Fix login"},
+		{"Fix\nlogin", "Fix login"},
+		{"Fix\r\nlogin", "Fix  login"},
+		{"Fix\x1b[31mlogin\x7f", "Fix[31mlogin"}, // 空白類以外の制御文字は除く
+		{"\v\f", ""},                             // 空白類でも \t \n \r 以外は除く
+	}
+	for _, tt := range tests {
+		if got := stripControl(tt.in); got != tt.want {
+			t.Errorf("stripControl(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}

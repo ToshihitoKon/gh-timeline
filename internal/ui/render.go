@@ -342,9 +342,10 @@ func newDisplayEvent(ev github.Event) displayEvent {
 	return displayEvent{Event: ev, Count: 1, Targets: appendTarget(nil, ev.Target)}
 }
 
-// appendTarget は依頼先を足す。依頼先のアカウントが削除済みなどで取れなかった分（空文字列）は足さない。
+// appendTarget は依頼先を足す。依頼先のアカウントが削除済みなどで取れなかった分（空文字列）と、
+// 依頼の取り消しと再依頼で重なった分は足さない。
 func appendTarget(targets []string, target string) []string {
-	if target == "" {
+	if target == "" || slices.Contains(targets, target) {
 		return targets
 	}
 	return append(targets, target)

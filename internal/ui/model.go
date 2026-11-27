@@ -117,6 +117,9 @@ func (m *Model) scheduleNextPoll(now time.Time) tea.Cmd {
 	return tea.Tick(m.interval, func(time.Time) tea.Msg { return pollTickMsg{seq: seq} })
 }
 
+// Update の中では、m を書き換えるメソッド（startFetch、scheduleNextPoll）を
+// return m, m.startFetch(...) のように m と同じ文で呼ばない。
+// 戻り値の m を読むのがメソッド呼び出しの前か後かは Go の仕様で決まっていない。
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -140,7 +143,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.isFetching {
 				return m, nil
 			}
-			return m, m.startFetch(time.Now())
+			cmd := m.startFetch(time.Now())
+			return m, cmd
 		case " ":
 			// viewport の既定ではスペースが 1 画面下へのスクロールに割り当たっているため、
 			// viewport に渡さずここで止める。
@@ -162,7 +166,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.seq != m.pollSeq || m.isFetching {
 			return m, nil
 		}
-		return m, m.startFetch(time.Now())
+		cmd := m.startFetch(time.Now())
+		return m, cmd
 
 	case fetchedMsg:
 		m.isFetching = false
@@ -190,7 +195,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refreshContent()
 			}
 		}
-		return m, m.scheduleNextPoll(time.Now())
+		cmd := m.scheduleNextPoll(time.Now())
+		return m, cmd
 
 	case spinner.TickMsg:
 		// スピナーは状態行（View で毎回組み立てる）にしか出さないため、

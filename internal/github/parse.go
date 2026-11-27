@@ -292,9 +292,13 @@ func loginOf(a *rawActor) string {
 
 // stripControl は C0 / C1 制御文字と DEL を除く。描画側ではなく取り込む段階で除くのは、
 // TUI と -dump の出力先ごとに除き漏れが出ないようにするため。
+// タブと改行は除かずに半角スペースへ置き換える。除くと前後の語がつながってしまう。
 func stripControl(s string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		switch {
+		case r == '\t' || r == '\n' || r == '\r':
+			return ' '
+		case unicode.IsControl(r):
 			return -1
 		}
 		return r

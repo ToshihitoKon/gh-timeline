@@ -73,6 +73,27 @@ func TestRenderBatches_CollapsesOnlyCountedAndTargetedKinds(t *testing.T) {
 	}
 }
 
+func TestRenderBatches_CollapsedTargetsShownOnce(t *testing.T) {
+	// 依頼、取り消し、再依頼を 1 回のポーリングの間に行うと、同じ依頼先へのイベントが続けて取れる
+	request := ev(github.EventReviewRequested, "alice", 13, 0)
+	request.Target = "bob"
+	again := ev(github.EventReviewRequested, "alice", 13, 2)
+	again.Target = "bob"
+	b := timeline.Batch{
+		CheckedAt: timeAt(14, 5),
+		Entries:   []timeline.Entry{entry(request, again)},
+	}
+	got := ansi.Strip(renderBatch(b, RenderOptions{Viewer: "me"}))
+	want := strings.Join([]string{
+		"--- 14:05 ---",
+		"o/r PR#7 Add feature",
+		"  13:02 review requested alice → bob",
+	}, "\n")
+	if got != want {
+		t.Errorf("RenderBatches =\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestRenderBatches_ShowsTargetOfAnyKind(t *testing.T) {
 	commented := ev(github.EventCommented, "alice", 13, 0)
 	commented.Target = "bob"
