@@ -61,7 +61,7 @@ func main() {
 	}
 
 	client := github.NewClient(github.ExecGH, *includeTeamReviews)
-	tracker := timeline.NewTracker(*lookback)
+	tracker := timeline.NewTracker(time.Now().Add(-*lookback))
 
 	if *dump {
 		if err := runDump(client, tracker, *showURL, ui.FetchTimeout); err != nil {
@@ -97,7 +97,7 @@ func runDump(fetcher ui.Fetcher, tracker *timeline.Tracker, showURL bool, timeou
 	defer cancel()
 
 	now := time.Now()
-	since := tracker.Since(now)
+	since := tracker.Since()
 	result, err := fetcher.Search(ctx, since, tracker.SeenKeys())
 	if err != nil {
 		// gh が打ち切られたときのエラーは "signal: killed" だけで、時間切れだと読み取れない。

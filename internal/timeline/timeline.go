@@ -56,7 +56,8 @@ type Batch struct {
 
 // Tracker は表示済みの更新を覚えておき、新しい更新だけを Batch にする。
 type Tracker struct {
-	lookback time.Duration
+	// firstSince は初回のポーリングで検索する範囲の始点。以後のポーリングもこれより前は検索しない。
+	firstSince time.Time
 	// seen は PR / issue の Key ごとの、表示済みの内容。
 	seen map[string]*seenItem
 	// lastStartedAt は直近に成功したポーリングの開始時刻。
@@ -76,17 +77,27 @@ type seenItem struct {
 	eventIDs map[string]bool
 }
 
-// NewTracker は Tracker を作る。lookback は初回のポーリングでさかのぼる幅。
-func NewTracker(lookback time.Duration) *Tracker {
-	return &Tracker{lookback: lookback, seen: map[string]*seenItem{}}
+// NewTracker は Tracker を作る。firstSince は初回のポーリングで検索する範囲の始点。
+//
+// 初回の始点を最初のポーリングの開始時に決めないのは、初回が失敗して取り直すたびに
+// 始点が後ろへずれ、失敗していた間の更新を取りこぼすため。
+func NewTracker(firstSince time.Time) *Tracker {
+	return &Tracker{firstSince: firstSince.Truncate(time.Second), seen: map[string]*seenItem{}}
 }
 
-// Since は now に開始するポーリングで検索する範囲の始点を返す。
-func (t *Tracker) Since(now time.Time) time.Time {
+// Since は次のポーリングで検索する範囲の始点を返す。
+//
+// 検索は updated:>= に秒単位の時刻を渡すため、イベントの時刻と比べる始点も秒に切り詰めて検索と揃える。
+func (t *Tracker) Since() time.Time {
 	if t.lastStartedAt.IsZero() {
-		return now.Add(-t.lookback)
+		return t.firstSince
 	}
-	return t.lastStartedAt.Add(-searchLagOverlap)
+	since := t.lastStartedAt.Add(-searchLagOverlap).Truncate(time.Second)
+	// -since が searchLagOverlap より短いと、初回の始点より前の更新を新着として出してしまう
+	if since.Before(t.firstSince) {
+		return t.firstSince
+	}
+	return since
 }
 
 // SeenKeys は表示済みの PR / issue の Key を返す。
@@ -100,9 +111,9 @@ func (t *Tracker) SeenKeys() map[string]bool {
 }
 
 // Apply は startedAt に開始したポーリングの検索結果から、新しい更新を取り出す。
-// 検索範囲の始点は Since(startedAt) とみなす。
+// 検索範囲の始点は、検索を始めたときの Since() とみなす。
 func (t *Tracker) Apply(startedAt time.Time, items []github.Item) Batch {
-	since := t.Since(startedAt)
+	since := t.Since()
 	batch := Batch{CheckedAt: startedAt}
 	for _, item := range items {
 		if entry, ok := t.newEntry(item, since); ok {
@@ -147,21 +158,24 @@ func (t *Tracker) newEntry(item github.Item, since time.Time) (entry Entry, ok b
 
 // isNewEvent は ev を新着として出すかを返す。
 //
-// 初めて見る PR / issue は検索範囲の始点より後のイベントを出す。
+// 初めて見る PR / issue は検索範囲の始点以降のイベントを出す。
 // 表示済みのものは、時刻によらず ID をまだ見ていないイベントを出す。手元で前にコミットして後から push した
 // コミットは committedDate が前回の表示より古くなり、時刻では取りこぼすため。
 //
-// ただしコミット以外は、初めて見たときの始点より後のものに限る。取得するのは直近 10 件だけなので、
+// ただしコミット以外は、初めて見たときの始点以降のものに限る。取得するのは直近 10 件だけなので、
 // コメントの削除や force push で消えたコミットの分だけ、それより古いイベントが取得範囲に入ってくる。
 // コミット以外の時刻は GitHub が記録した時刻で、後から古い時刻のものが現れることはない。
 func isNewEvent(ev github.Event, s *seenItem, isSeen bool) bool {
+	// After で比べないのは、検索の updated:>= が始点ちょうどに更新された PR / issue も返すため。
+	// After では、その PR / issue のイベントが落ちて "updated -" だけが出る。
+	isSinceFirstSeen := !ev.At.Before(s.firstSince)
 	if !isSeen {
-		return ev.At.After(s.firstSince)
+		return isSinceFirstSeen
 	}
 	if s.eventIDs[ev.ID] {
 		return false
 	}
-	return ev.Type == github.EventCommitted || ev.At.After(s.firstSince)
+	return ev.Type == github.EventCommitted || isSinceFirstSeen
 }
 
 // forgetBefore は updatedAt が threshold より前の PR / issue の記録を捨てる。

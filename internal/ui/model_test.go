@@ -309,7 +309,7 @@ func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 }
 
 func newReadyModel(f Fetcher) Model {
-	m := NewModel(f, timeline.NewTracker(time.Hour), 5*time.Minute, false)
+	m := NewModel(f, timeline.NewTracker(time.Now().Add(-time.Hour)), 5*time.Minute, false)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
 	return next.(Model)
 }
@@ -468,7 +468,7 @@ func TestModel_FetchWithoutUpdatesKeepsContent(t *testing.T) {
 }
 
 func TestModel_ScrollFollowsTopOrKeepsReadingPosition(t *testing.T) {
-	m := NewModel(fakeFetcher{}, timeline.NewTracker(time.Hour), 5*time.Minute, false)
+	m := NewModel(fakeFetcher{}, timeline.NewTracker(time.Now().Add(-time.Hour)), 5*time.Minute, false)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: chromeLines + 3})
 	m = next.(Model)
 	m.batches = []timeline.Batch{batchAt(11, 40), batchAt(11, 45)}
@@ -521,8 +521,17 @@ func applyFetch(t *testing.T, m Model, items ...github.Item) Model {
 	m.isFetching = true
 	next, _ := m.Update(fetchedMsg{
 		startedAt: time.Now(),
+		since:     m.tracker.Since(),
 		result:    github.SearchResult{Viewer: "me", Items: items},
 	})
+	return next.(Model)
+}
+
+// failFetch は取得が失敗した状況を Model に流す。
+func failFetch(t *testing.T, m Model) Model {
+	t.Helper()
+	m.isFetching = true
+	next, _ := m.Update(fetchedMsg{startedAt: time.Now(), since: m.tracker.Since(), err: errors.New("boom")})
 	return next.(Model)
 }
 
@@ -536,12 +545,19 @@ func TestModel_FirstFetchIsRead(t *testing.T) {
 }
 
 func TestModel_FirstFetchErrorThenSuccessIsRead(t *testing.T) {
-	m := newReadyModel(fakeFetcher{})
-	m.isFetching = true
-	next, _ := m.Update(fetchedMsg{startedAt: time.Now(), err: errors.New("boom")})
-	m = applyFetch(t, next.(Model), newItem(1, 1))
+	m := failFetch(t, newReadyModel(fakeFetcher{}))
+	m = applyFetch(t, m, newItem(1, 1))
 	if m.readBatchCount != 1 {
 		t.Errorf("readBatchCount = %d, want 1", m.readBatchCount)
+	}
+}
+
+func TestModel_ResizeAfterFailedFirstFetchStillShowsLoading(t *testing.T) {
+	m := failFetch(t, newReadyModel(fakeFetcher{}))
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
+	view := next.(Model).View()
+	if strings.Contains(view, "No updates since") || !strings.Contains(view, "Loading...") {
+		t.Errorf("view after a failed first fetch claims nothing was found:\n%s", view)
 	}
 }
 
@@ -592,7 +608,7 @@ func TestModel_LaterFetchIsUnreadUntilSpace(t *testing.T) {
 }
 
 func TestModel_SpaceKeepsScrollPosition(t *testing.T) {
-	m := NewModel(fakeFetcher{}, timeline.NewTracker(time.Hour), 5*time.Minute, false)
+	m := NewModel(fakeFetcher{}, timeline.NewTracker(time.Now().Add(-time.Hour)), 5*time.Minute, false)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: chromeLines + 3})
 	m = next.(Model)
 	m.batches = []timeline.Batch{batchAt(11, 40), batchAt(11, 45), batchAt(11, 50)}
