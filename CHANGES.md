@@ -2,6 +2,14 @@
 
 Entries from v0.3.0 on are written by [release-please](https://github.com/googleapis/release-please) from pull request titles. Breaking changes and how to migrate are listed under "⚠ BREAKING CHANGES". Entries up to v0.2.0 list only breaking changes.
 
+## [0.4.1](https://github.com/ToshihitoKon/gh-timeline/compare/v0.4.0...v0.4.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* show replies to review threads ([#12](https://github.com/ToshihitoKon/gh-timeline/issues/12)) ([820344f](https://github.com/ToshihitoKon/gh-timeline/commit/820344ff7502c23fe35b8dbdd111594d3bf6caa5))
+* time pushed commits by when they were pushed ([#15](https://github.com/ToshihitoKon/gh-timeline/issues/15)) ([84a4606](https://github.com/ToshihitoKon/gh-timeline/commit/84a460635a0ceffb1aa10a178427f9b7b3775024))
+
 ## [0.4.0](https://github.com/ToshihitoKon/gh-timeline/compare/v0.3.0...v0.4.0) (2026-11-26)
 
 
