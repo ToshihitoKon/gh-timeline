@@ -19,6 +19,8 @@ fragment results on SearchResultItemConnection {
       updatedAt
       author { login }
       repository { nameWithOwner }
+      headRefName
+      headRepository { nameWithOwner }
       timelineItems(last: 10, itemTypes: [ISSUE_COMMENT, PULL_REQUEST_COMMIT, MERGED_EVENT, CLOSED_EVENT, REOPENED_EVENT, REVIEW_REQUESTED_EVENT, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, HEAD_REF_FORCE_PUSHED_EVENT, ASSIGNED_EVENT]) {
         nodes { ...timelineItem }
       }
@@ -50,7 +52,7 @@ fragment timelineItem on Node {
   # comments を 10 件までにしているのは、返信だけのレビューはふつう 1 件で、
   # 返信かどうかの判定に全件は要らないため。10 件を超えるレビューは返信として扱わない。
   ... on PullRequestReview { submittedAt createdAt state body author { login } comments(first: 10) { totalCount nodes { replyTo { id } } } }
-  ... on PullRequestCommit { commit { committedDate author { name user { login } } } }
+  ... on PullRequestCommit { commit { oid committedDate author { name user { login } } } }
   ... on MergedEvent { createdAt actor { login } }
   ... on ClosedEvent { createdAt actor { login } }
   ... on ReopenedEvent { createdAt actor { login } }
