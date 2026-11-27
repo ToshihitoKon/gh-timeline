@@ -19,27 +19,37 @@ import (
 
 var jst = time.FixedZone("JST", 9*60*60)
 
+// timeAt はテストの基準日（2026-11-20 JST）の hh:mm を返す。
+func timeAt(hh, mm int) time.Time {
+	return time.Date(2026, 11, 20, hh, mm, 0, 0, jst)
+}
+
 func entry(events ...github.Event) timeline.Entry {
 	return timeline.Entry{
 		Item: github.Item{
 			Kind: github.KindPullRequest, Repo: "o/r", Number: 7, Title: "Add feature",
-			State: "OPEN", Roles: github.RoleAuthor, UpdatedAt: time.Date(2026, 11, 20, 14, 0, 0, 0, jst),
+			State: "OPEN", UpdatedAt: timeAt(14, 0),
 		},
 		Events: events,
 	}
 }
 
 func ev(t github.EventType, actor string, hh, mm int) github.Event {
-	return github.Event{Type: t, Actor: actor, At: time.Date(2026, 11, 20, hh, mm, 0, 0, jst)}
+	return github.Event{Type: t, Actor: actor, At: timeAt(hh, mm)}
 }
 
-func TestRenderBatch_GroupsEventsByItemNewestFirst(t *testing.T) {
+// renderBatch は 1 件の Batch を、-dump と同じく左端の欄を付けずに描画する。
+func renderBatch(b timeline.Batch, opts RenderOptions) string {
+	return RenderBatches([]timeline.Batch{b}, 0, opts)
+}
+
+func TestRenderBatches_GroupsEventsByItemNewestFirst(t *testing.T) {
 	other := entry(ev(github.EventCommented, "bob", 13, 55))
 	other.Item.Kind = github.KindIssue
 	other.Item.Number = 8
 	other.Item.Title = "Bug"
 	b := timeline.Batch{
-		CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
+		CheckedAt: timeAt(14, 5),
 		Entries: []timeline.Entry{
 			entry(
 				ev(github.EventCommitted, "me", 13, 50),
@@ -49,7 +59,7 @@ func TestRenderBatch_GroupsEventsByItemNewestFirst(t *testing.T) {
 			other,
 		},
 	}
-	got := ansi.Strip(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me"}))
+	got := ansi.Strip(renderBatch(b, RenderOptions{Viewer: "me"}))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
 		"o/r PR#7 Add feature", // 最新のイベントが新しい PR / issue が上
@@ -59,11 +69,11 @@ func TestRenderBatch_GroupsEventsByItemNewestFirst(t *testing.T) {
 		"  13:55 commented bob",
 	}, "\n")
 	if got != want {
-		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
+		t.Errorf("RenderBatches =\n%s\nwant\n%s", got, want)
 	}
 }
 
-func TestRenderBatch_CollapsesNoisyEvents(t *testing.T) {
+func TestRenderBatches_CollapsesNoisyEvents(t *testing.T) {
 	withTarget := func(e github.Event, target string) github.Event {
 		e.Target = target
 		return e
@@ -71,7 +81,7 @@ func TestRenderBatch_CollapsesNoisyEvents(t *testing.T) {
 	request := ev(github.EventReviewRequested, "alice", 13, 0)
 	assign := ev(github.EventAssigned, "alice", 13, 1)
 	b := timeline.Batch{
-		CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
+		CheckedAt: timeAt(14, 5),
 		Entries: []timeline.Entry{entry(
 			withTarget(request, "bob"),
 			withTarget(request, "carol"),
@@ -83,7 +93,7 @@ func TestRenderBatch_CollapsesNoisyEvents(t *testing.T) {
 			ev(github.EventReplied, "dave", 13, 21),
 		)},
 	}
-	got := ansi.Strip(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me"}))
+	got := ansi.Strip(renderBatch(b, RenderOptions{Viewer: "me"}))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
 		"o/r PR#7 Add feature",
@@ -93,18 +103,18 @@ func TestRenderBatch_CollapsesNoisyEvents(t *testing.T) {
 		"  13:00 review requested alice → bob, carol",
 	}, "\n")
 	if got != want {
-		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
+		t.Errorf("RenderBatches =\n%s\nwant\n%s", got, want)
 	}
 }
 
-func TestRenderBatch_DateShownWhenDayChanges(t *testing.T) {
+func TestRenderBatches_DateShownWhenDayChanges(t *testing.T) {
 	prev := time.Date(2026, 11, 19, 23, 58, 0, 0, jst)
 	yesterday := github.Event{Type: github.EventCommented, Actor: "alice", At: time.Date(2026, 11, 19, 23, 59, 0, 0, jst)}
 	b := timeline.Batch{
-		CheckedAt: time.Date(2026, 11, 20, 0, 3, 0, 0, jst),
+		CheckedAt: timeAt(0, 3),
 		Entries:   []timeline.Entry{entry(), entry(yesterday)},
 	}
-	got := ansi.Strip(RenderBatch(b, prev, RenderOptions{Viewer: "me"}))
+	got := ansi.Strip(RenderBatches([]timeline.Batch{{CheckedAt: prev}, b}, 0, RenderOptions{Viewer: "me"}))
 	want := strings.Join([]string{
 		"--- 11/20 00:03 ---",
 		// イベントの無い更新は updatedAt を "updated" として、誰の操作か分からないので "-" で出す
@@ -112,21 +122,23 @@ func TestRenderBatch_DateShownWhenDayChanges(t *testing.T) {
 		"  14:00 updated -",
 		"o/r PR#7 Add feature",
 		"  11/19 23:59 commented alice",
+		"",
+		"--- 23:58 ---", // 最も古い Batch には比べる日付が無いので、日付を出さない
 	}, "\n")
 	if got != want {
-		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
+		t.Errorf("RenderBatches =\n%s\nwant\n%s", got, want)
 	}
 }
 
-func TestRenderBatch_SameMinuteEventsNewestFirstAndEmptyTargetOmitted(t *testing.T) {
+func TestRenderBatches_SameMinuteEventsNewestFirstAndEmptyTargetOmitted(t *testing.T) {
 	requested := ev(github.EventReviewRequested, "alice", 13, 0) // 依頼先が取れなかった（Target が空）
 	assigned := ev(github.EventAssigned, "alice", 13, 0)
 	assigned.Target = "alice"
 	b := timeline.Batch{
-		CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
+		CheckedAt: timeAt(14, 5),
 		Entries:   []timeline.Entry{entry(requested, assigned)},
 	}
-	got := ansi.Strip(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me"}))
+	got := ansi.Strip(renderBatch(b, RenderOptions{Viewer: "me"}))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
 		"o/r PR#7 Add feature",
@@ -134,13 +146,13 @@ func TestRenderBatch_SameMinuteEventsNewestFirstAndEmptyTargetOmitted(t *testing
 		"  13:00 review requested alice",
 	}, "\n")
 	if got != want {
-		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
+		t.Errorf("RenderBatches =\n%s\nwant\n%s", got, want)
 	}
 }
 
-func TestRenderBatch_TruncatesToWidth(t *testing.T) {
-	b := timeline.Batch{CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst), Entries: []timeline.Entry{entry()}}
-	for _, line := range strings.Split(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me", Width: 12}), "\n") {
+func TestRenderBatches_TruncatesToWidth(t *testing.T) {
+	b := timeline.Batch{CheckedAt: timeAt(14, 5), Entries: []timeline.Entry{entry()}}
+	for _, line := range strings.Split(renderBatch(b, RenderOptions{Viewer: "me", Width: 12}), "\n") {
 		if w := ansi.StringWidth(line); w > 12 {
 			t.Errorf("line %q width = %d, want <= 12", ansi.Strip(line), w)
 		}
@@ -155,14 +167,14 @@ func entryWithURL(events ...github.Event) timeline.Entry {
 	return e
 }
 
-func TestRenderBatch_ShowURLAddsURLLineUnderHeader(t *testing.T) {
+func TestRenderBatches_ShowURLAddsURLLineUnderHeader(t *testing.T) {
 	noURL := entry(ev(github.EventCommented, "bob", 13, 55))
 	noURL.Item.Number = 8
 	b := timeline.Batch{
-		CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
+		CheckedAt: timeAt(14, 5),
 		Entries:   []timeline.Entry{entryWithURL(ev(github.EventApproved, "alice", 14, 0)), noURL},
 	}
-	got := ansi.Strip(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me", ShowURL: true}))
+	got := ansi.Strip(renderBatch(b, RenderOptions{Viewer: "me", ShowURL: true}))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
 		"o/r PR#7 Add feature",
@@ -172,14 +184,14 @@ func TestRenderBatch_ShowURLAddsURLLineUnderHeader(t *testing.T) {
 		"  13:55 commented bob",
 	}, "\n")
 	if got != want {
-		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
+		t.Errorf("RenderBatches =\n%s\nwant\n%s", got, want)
 	}
 }
 
-func TestRenderBatch_WithoutShowURLHasNoURLLine(t *testing.T) {
-	b := timeline.Batch{CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst), Entries: []timeline.Entry{entryWithURL()}}
-	if got := RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me"}); strings.Contains(got, itemURL) {
-		t.Errorf("RenderBatch contains the URL without ShowURL:\n%q", got)
+func TestRenderBatches_WithoutShowURLHasNoURLLine(t *testing.T) {
+	b := timeline.Batch{CheckedAt: timeAt(14, 5), Entries: []timeline.Entry{entryWithURL()}}
+	if got := renderBatch(b, RenderOptions{Viewer: "me"}); strings.Contains(got, itemURL) {
+		t.Errorf("RenderBatches contains the URL without ShowURL:\n%q", got)
 	}
 }
 
@@ -194,7 +206,7 @@ func splitHyperlink(line, url string) (before, inside, after string, ok bool) {
 	return before, inside, after, found
 }
 
-func TestRenderBatch_HyperlinksRepoAndNumber(t *testing.T) {
+func TestRenderBatches_HyperlinksRepoAndNumber(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		actor string
@@ -205,10 +217,10 @@ func TestRenderBatch_HyperlinksRepoAndNumber(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := timeline.Batch{
-				CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
+				CheckedAt: timeAt(14, 5),
 				Entries:   []timeline.Entry{entryWithURL(ev(github.EventCommented, tc.actor, 14, 0))},
 			}
-			lines := strings.Split(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me", ShowURL: true, UseHyperlinks: true}), "\n")
+			lines := strings.Split(renderBatch(b, RenderOptions{Viewer: "me", ShowURL: true, UseHyperlinks: true}), "\n")
 
 			before, inside, after, ok := splitHyperlink(lines[1], itemURL)
 			if !ok || before != "" || ansi.Strip(inside) != "o/r PR#7" || ansi.Strip(after) != " Add feature" {
@@ -229,17 +241,17 @@ func TestRenderBatch_HyperlinksRepoAndNumber(t *testing.T) {
 // underlineSGR は下線を含む SGR。lipgloss は下線を色や太字と 1 つの SGR にまとめて出す（\x1b[1;4;38;5;42m など）。
 var underlineSGR = regexp.MustCompile(`\x1b\[(?:[0-9:]*;)*4(?:;[0-9:]*)*m`)
 
-func TestRenderBatch_LinkedTextIsUnderlined(t *testing.T) {
+func TestRenderBatches_LinkedTextIsUnderlined(t *testing.T) {
 	// テストの実行環境は色を出さない設定になり、下線も出なくなるため、色を出す設定に切り替える
 	prevProfile := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	t.Cleanup(func() { lipgloss.SetColorProfile(prevProfile) })
 
 	b := timeline.Batch{
-		CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
+		CheckedAt: timeAt(14, 5),
 		Entries:   []timeline.Entry{entryWithURL(ev(github.EventApproved, "alice", 14, 0))},
 	}
-	linked := strings.Split(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me", ShowURL: true, UseHyperlinks: true}), "\n")
+	linked := strings.Split(renderBatch(b, RenderOptions{Viewer: "me", ShowURL: true, UseHyperlinks: true}), "\n")
 	for _, line := range linked[1:3] { // 見出し行と URL の行
 		_, inside, after, ok := splitHyperlink(line, itemURL)
 		if !ok || !underlineSGR.MatchString(inside) {
@@ -255,24 +267,24 @@ func TestRenderBatch_LinkedTextIsUnderlined(t *testing.T) {
 	}
 
 	// -dump のようにリンクにしないときは、下線も引かない
-	for _, line := range strings.Split(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me", ShowURL: true}), "\n") {
+	for _, line := range strings.Split(renderBatch(b, RenderOptions{Viewer: "me", ShowURL: true}), "\n") {
 		if underlineSGR.MatchString(line) {
 			t.Errorf("line %q is underlined without UseHyperlinks", line)
 		}
 	}
 }
 
-func TestRenderBatch_NoHyperlinksUnlessRequested(t *testing.T) {
-	b := timeline.Batch{CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst), Entries: []timeline.Entry{entryWithURL()}}
+func TestRenderBatches_NoHyperlinksUnlessRequested(t *testing.T) {
+	b := timeline.Batch{CheckedAt: timeAt(14, 5), Entries: []timeline.Entry{entryWithURL()}}
 	// -dump の出力にエスケープシーケンスを混ぜない
-	if got := RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me", ShowURL: true}); strings.Contains(got, "\x1b]8;") {
-		t.Errorf("RenderBatch has a hyperlink without UseHyperlinks:\n%q", got)
+	if got := renderBatch(b, RenderOptions{Viewer: "me", ShowURL: true}); strings.Contains(got, "\x1b]8;") {
+		t.Errorf("RenderBatches has a hyperlink without UseHyperlinks:\n%q", got)
 	}
 }
 
 func TestRenderBatches_TruncatedHeaderKeepsHyperlinkClosed(t *testing.T) {
-	b := timeline.Batch{CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst), Entries: []timeline.Entry{entryWithURL()}}
-	got := RenderBatches([]timeline.Batch{b}, 1, RenderOptions{Viewer: "me", Width: 12, UseHyperlinks: true})
+	b := timeline.Batch{CheckedAt: timeAt(14, 5), Entries: []timeline.Entry{entryWithURL()}}
+	got := RenderBatches([]timeline.Batch{b}, 1, RenderOptions{Viewer: "me", Width: 12, UseHyperlinks: true, ShowGutter: true})
 	// 欄の 4 桁を除いた 8 桁に切り詰めると、リンクの途中（"o/r PR#…"）で切れる
 	header := strings.Split(got, "\n")[1]
 	if _, _, _, ok := splitHyperlink(header, itemURL); !ok {
@@ -309,8 +321,12 @@ func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 }
 
 func newReadyModel(f Fetcher) Model {
+	return newReadyModelWithHeight(f, 20)
+}
+
+func newReadyModelWithHeight(f Fetcher, height int) Model {
 	m := NewModel(f, timeline.NewTracker(time.Now().Add(-time.Hour)), 5*time.Minute, false)
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: height})
 	return next.(Model)
 }
 
@@ -360,13 +376,13 @@ func TestModel_FirstFetchWithNoUpdatesReplacesLoading(t *testing.T) {
 
 func batchAt(hh, mm int) timeline.Batch {
 	return timeline.Batch{
-		CheckedAt: time.Date(2026, 11, 20, hh, mm, 0, 0, jst),
+		CheckedAt: timeAt(hh, mm),
 		Entries:   []timeline.Entry{entry(ev(github.EventCommented, "alice", hh, mm-1))},
 	}
 }
 
 func TestRenderBatches_NewestBatchOnTop(t *testing.T) {
-	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), batchAt(11, 50)}, 0, RenderOptions{Viewer: "me"}))
+	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), batchAt(11, 50)}, 0, RenderOptions{Viewer: "me", ShowGutter: true}))
 	second := strings.Index(got, "--- 11:45 ---")
 	if !strings.HasPrefix(got, "▐ --- 11:50 ---") || second < 0 {
 		t.Errorf("want 11:50 block first, got\n%s", got)
@@ -381,7 +397,7 @@ func TestRenderBatches_GraphAndUnreadMarkerAtLeftEdge(t *testing.T) {
 	issue.Item.Title = "Bug"
 	newer.Entries = append(newer.Entries, issue)
 
-	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), newer}, 1, RenderOptions{Viewer: "me"}))
+	got := ansi.Strip(RenderBatches([]timeline.Batch{batchAt(11, 45), newer}, 1, RenderOptions{Viewer: "me", ShowGutter: true}))
 	want := strings.Join([]string{
 		// 区切り行は丸と罫線の列から書き始め、新着の印の列には入らない
 		"▐ --- 11:50 ---",
@@ -401,7 +417,7 @@ func TestRenderBatches_GraphAndUnreadMarkerAtLeftEdge(t *testing.T) {
 
 func TestRenderBatches_TruncatesIncludingMarker(t *testing.T) {
 	for _, width := range []int{1, 12} {
-		for _, line := range strings.Split(RenderBatches([]timeline.Batch{batchAt(11, 45)}, 0, RenderOptions{Viewer: "me", Width: width}), "\n") {
+		for _, line := range strings.Split(RenderBatches([]timeline.Batch{batchAt(11, 45)}, 0, RenderOptions{Viewer: "me", Width: width, ShowGutter: true}), "\n") {
 			// 極端に狭い端末では、欄の 4 桁に加えて本文を 1 桁（省略記号）だけ残すため、その分まで許す
 			if w := ansi.StringWidth(line); w > max(width, 5) {
 				t.Errorf("width %d: line %q width = %d", width, ansi.Strip(line), w)
@@ -411,7 +427,7 @@ func TestRenderBatches_TruncatesIncludingMarker(t *testing.T) {
 }
 
 func TestBatchRenderCache_RendersOnlyNewBatches(t *testing.T) {
-	opts := RenderOptions{Viewer: "me"}
+	opts := RenderOptions{Viewer: "me", ShowGutter: true}
 	var c batchRenderCache
 	c.render([]timeline.Batch{batchAt(11, 45)}, 0, opts)
 
@@ -437,10 +453,10 @@ func TestBatchRenderCache_RerendersWhenReadStateOrOptionsChange(t *testing.T) {
 		readCount int
 		opts      RenderOptions
 	}{
-		{"all unread", 0, RenderOptions{Viewer: "me", Width: 80}},
-		{"marked read", 3, RenderOptions{Viewer: "me", Width: 80}},
-		{"resized", 3, RenderOptions{Viewer: "me", Width: 20}},
-		{"URL shown", 3, RenderOptions{Viewer: "me", Width: 20, ShowURL: true}},
+		{"all unread", 0, RenderOptions{Viewer: "me", Width: 80, ShowGutter: true}},
+		{"marked read", 3, RenderOptions{Viewer: "me", Width: 80, ShowGutter: true}},
+		{"resized", 3, RenderOptions{Viewer: "me", Width: 20, ShowGutter: true}},
+		{"URL shown", 3, RenderOptions{Viewer: "me", Width: 20, ShowURL: true, ShowGutter: true}},
 	}
 	var c batchRenderCache
 	for _, s := range steps {
@@ -468,9 +484,7 @@ func TestModel_FetchWithoutUpdatesKeepsContent(t *testing.T) {
 }
 
 func TestModel_ScrollFollowsTopOrKeepsReadingPosition(t *testing.T) {
-	m := NewModel(fakeFetcher{}, timeline.NewTracker(time.Now().Add(-time.Hour)), 5*time.Minute, false)
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: chromeLines + 3})
-	m = next.(Model)
+	m := newReadyModelWithHeight(fakeFetcher{}, chromeLines+3)
 	m.batches = []timeline.Batch{batchAt(11, 40), batchAt(11, 45)}
 	m.refreshContent()
 
@@ -493,14 +507,19 @@ func TestModel_ScrollFollowsTopOrKeepsReadingPosition(t *testing.T) {
 
 func TestModel_StalePollTickIgnoredAfterManualRefresh(t *testing.T) {
 	m := newReadyModel(fakeFetcher{})
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 	m = next.(Model)
 	if !m.isFetching {
 		t.Fatal("r did not start fetching")
 	}
-	m.isFetching = false // 取得完了前に古い tick が届いた状況を作る
-	if _, cmd := m.Update(pollTickMsg{seq: 0}); cmd != nil {
-		t.Error("stale poll tick started another fetch")
+	// r より前に予約した tick が、取得中と取得後のそれぞれで届く
+	if _, tickCmd := m.Update(pollTickMsg{seq: 0}); tickCmd != nil {
+		t.Error("stale poll tick started another fetch while fetching")
+	}
+	next, _ = m.Update(runCmd(t, cmd))
+	m = next.(Model)
+	if _, tickCmd := m.Update(pollTickMsg{seq: 0}); tickCmd != nil {
+		t.Error("stale poll tick started another fetch after the refresh finished")
 	}
 }
 
@@ -608,14 +627,12 @@ func TestModel_LaterFetchIsUnreadUntilSpace(t *testing.T) {
 }
 
 func TestModel_SpaceKeepsScrollPosition(t *testing.T) {
-	m := NewModel(fakeFetcher{}, timeline.NewTracker(time.Now().Add(-time.Hour)), 5*time.Minute, false)
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: chromeLines + 3})
-	m = next.(Model)
+	m := newReadyModelWithHeight(fakeFetcher{}, chromeLines+3)
 	m.batches = []timeline.Batch{batchAt(11, 40), batchAt(11, 45), batchAt(11, 50)}
 	m.refreshContent()
 	m.viewport.SetYOffset(2)
 
-	next, _ = m.Update(spaceKey)
+	next, _ := m.Update(spaceKey)
 	m = next.(Model)
 	if m.viewport.YOffset != 2 {
 		t.Errorf("YOffset = %d, want 2 (space must not scroll)", m.viewport.YOffset)
@@ -681,7 +698,15 @@ func TestModel_FetchErrorShownInFooter(t *testing.T) {
 		t.Errorf("footer = %q, want single-line error", got)
 	}
 	// 80 桁の端末で切り詰めても、キー案内に押し出されずにエラーの本文が読める
-	if got := ansi.Strip(m.fitWidth(m.footer())); !strings.Contains(got, "error: gh api: exit status 1: HTTP 401") {
+	if got := ansi.Strip(truncate(m.footer(), m.width)); !strings.Contains(got, "error: gh api: exit status 1: HTTP 401") {
 		t.Errorf("footer at width %d = %q, want the error text to survive truncation", m.width, got)
+	}
+}
+
+func TestModel_StatusLineWhileFetchingHasOneSpaceAfterSpinner(t *testing.T) {
+	m := newReadyModel(fakeFetcher{})
+	m.isFetching = true
+	if got := ansi.Strip(m.statusLine()); got != "⣾ checking..." {
+		t.Errorf("status line = %q, want %q", got, "⣾ checking...")
 	}
 }

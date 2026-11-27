@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -73,11 +72,15 @@ type RenderOptions struct {
 	// UseHyperlinks は見出し行と URL の行を OSC 8 のリンクにするか。
 	// -dump の出力をパイプで受けた側に、見えないエスケープシーケンスを混ぜないよう、TUI だけで使う。
 	UseHyperlinks bool
+	// ShowGutter は各行の左端に、新着の印・丸・罫線の欄を付けるか。TUI だけで使う。
+	ShowGutter bool
 }
 
-// RenderBatches は全 Batch を区切り行付きで、新しいものを上にして描画する。
-// batches は古い順で渡し、先頭から readCount 件を既読、それより新しいものを未読として
-// 各行の左端の欄に印・丸・罫線を付ける。
+// RenderBatches は全 Batch を新しいものを上にして描画する。各 Batch は "--- HH:MM ---" の区切り行に続けて、
+// PR / issue ごとに "owner/repo PR#123 タイトル" の見出し行と、字下げした "時刻 アクション ユーザー" のイベント行で描画する。
+// PR / issue は最新のイベントが新しい順、イベントも新しい順に並べる。
+// 区切り行には、1 つ前（時刻が古い側）の Batch と日付が変わったときだけ日付を出す。
+// batches は古い順で渡し、ShowGutter のときは先頭から readCount 件を既読、それより新しいものを未読として欄に出す。
 func RenderBatches(batches []timeline.Batch, readCount int, opts RenderOptions) string {
 	var cache batchRenderCache
 	return cache.render(batches, readCount, opts)
@@ -124,7 +127,7 @@ func (c *batchRenderCache) render(batches []timeline.Batch, readCount int, opts 
 	return strings.Join(texts, "\n\n")
 }
 
-// renderBatchBlock は batches[i] を区切り行付きで、各行の左端に欄を付けて描画する。
+// renderBatchBlock は batches[i] を区切り行付きで描画する。
 func renderBatchBlock(batches []timeline.Batch, i int, isUnread bool, opts RenderOptions) string {
 	var prev time.Time
 	if i > 0 {
@@ -132,7 +135,10 @@ func renderBatchBlock(batches []timeline.Batch, i int, isUnread bool, opts Rende
 	}
 	var lines []string
 	for _, l := range batchLines(batches[i], prev, opts) {
-		prefix := gutter(l.kind, isUnread)
+		var prefix string
+		if opts.ShowGutter {
+			prefix = gutter(l.kind, isUnread)
+		}
 		bodyWidth := opts.Width
 		if opts.Width > 0 {
 			// 欄より狭い端末でも本文は 1 桁残す。0 にすると truncate が「切り詰めない」と扱うため。
@@ -159,31 +165,17 @@ func gutter(kind lineKind, isUnread bool) string {
 	return newMark + " "
 }
 
-// RenderBatch は 1 回のポーリング分を "--- HH:MM ---" の区切り行に続けて、PR / issue ごとに
-// "owner/repo PR#123 タイトル" の見出し行と、字下げした "時刻 アクション ユーザー" のイベント行で描画する。
-// PR / issue は最新のイベントが新しい順、イベントも新しい順に並べる。
-// prevCheckedAt は 1 つ前（時刻が古い側）の Batch の時刻で、日付が変わったときだけ区切り行に日付を出す。
-func RenderBatch(b timeline.Batch, prevCheckedAt time.Time, opts RenderOptions) string {
-	var lines []string
-	for _, l := range batchLines(b, prevCheckedAt, opts) {
-		lines = append(lines, truncate(l.text, opts.Width))
-	}
-	return strings.Join(lines, "\n")
-}
-
 func batchLines(b timeline.Batch, prevCheckedAt time.Time, opts RenderOptions) []batchLine {
 	lines := []batchLine{{kind: lineSeparator, text: separator(b.CheckedAt, prevCheckedAt)}}
 	for _, blk := range batchBlocks(b) {
-		url := blk.Item.URL
-		isLinked := opts.UseHyperlinks && url != ""
 		var linkURL string
-		if isLinked {
-			linkURL = url
+		if opts.UseHyperlinks {
+			linkURL = blk.Item.URL
 		}
 		lines = append(lines, batchLine{kind: lineItemHeader, text: renderItemHeader(blk, opts.Viewer, linkURL)})
-		if opts.ShowURL && url != "" {
-			urlText := faintStyle.Underline(isLinked).Render(url)
-			lines = append(lines, batchLine{kind: lineURL, text: eventIndent + linkIf(isLinked, urlText, url)})
+		if url := blk.Item.URL; opts.ShowURL && url != "" {
+			urlText := faintStyle.Underline(linkURL != "").Render(url)
+			lines = append(lines, batchLine{kind: lineURL, text: eventIndent + hyperlink(urlText, linkURL)})
 		}
 		for _, ev := range blk.Events {
 			lines = append(lines, batchLine{kind: lineEvent, text: renderEventLine(ev, b.CheckedAt, opts.Viewer)})
@@ -192,10 +184,10 @@ func batchLines(b timeline.Batch, prevCheckedAt time.Time, opts RenderOptions) [
 	return lines
 }
 
-// linkIf は isLinked のとき text を url への OSC 8 のリンクで囲む。
+// hyperlink は text を url への OSC 8 のリンクで囲む。url が空なら text をそのまま返す。
 // 切り詰めで本文が切れても ansi.Truncate はエスケープシーケンスを残すので、リンクは閉じたままになる。
-func linkIf(isLinked bool, text, url string) string {
-	if !isLinked {
+func hyperlink(text, url string) string {
+	if url == "" {
 		return text
 	}
 	return ansi.SetHyperlink(url) + text + ansi.ResetHyperlink()
@@ -211,9 +203,9 @@ func truncate(line string, width int) string {
 }
 
 func separator(checkedAt, prevCheckedAt time.Time) string {
-	label := checkedAt.Format("15:04")
-	if !prevCheckedAt.IsZero() && !sameDay(checkedAt, prevCheckedAt) {
-		label = checkedAt.Format("01/02 15:04")
+	label := checkedAt.Format(clockLayout)
+	if !prevCheckedAt.IsZero() {
+		label = formatTimeOnDayOf(checkedAt, prevCheckedAt)
 	}
 	return separatorStyle.Render("--- " + label + " ---")
 }
@@ -239,12 +231,9 @@ func entryEvents(e timeline.Entry) []displayEvent {
 		return []displayEvent{{Event: github.Event{Type: github.EventUpdated, Actor: "-", At: e.Item.UpdatedAt}, Count: 1}}
 	}
 	events := collapseEvents(e.Events)
-	// 同じ分に記録されたイベント（PR 作成時のレビュー依頼とアサインなど）も新しい順にそろうよう、
-	// 古い順のイベントを反転してから安定ソートする。
+	// 並べ替えずに反転だけで新しい順になるのは、e.Events が古い順で、collapseEvents がまとめた行に
+	// 最後のイベントの時刻を使うため。同じ分のイベント（PR 作成時のレビュー依頼とアサインなど）も新しい順になる。
 	slices.Reverse(events)
-	sort.SliceStable(events, func(i, j int) bool {
-		return events[i].At.After(events[j].At)
-	})
 	return events
 }
 
@@ -270,21 +259,19 @@ func renderItemHeader(blk itemBlock, viewer, linkURL string) string {
 	ref := repoSt.Underline(isLinked).Render(item.Repo) +
 		gapSt.Underline(isLinked).Render(" ") +
 		numberSt.Underline(isLinked).Render(fmt.Sprintf("%s#%d", kind, item.Number))
-	return linkIf(isLinked, ref, linkURL) + gapSt.Render(" ") + titleSt.Render(item.Title)
+	return hyperlink(ref, linkURL) + gapSt.Render(" ") + titleSt.Render(item.Title)
 }
 
 // renderEventLine は "  14:01 review requested dave → you, erin" のイベント行を描画する。
 func renderEventLine(ev displayEvent, checkedAt time.Time, viewer string) string {
 	kind := eventKindOf(ev.Type)
 	parts := []string{
-		faintStyle.Render(formatEventTime(ev.At, checkedAt)),
+		faintStyle.Render(formatTimeOnDayOf(ev.At, checkedAt)),
 		kind.style.Render(kind.label(ev.Count)),
 		userStyle.Render(ev.Actor),
 	}
-	// 依頼先のアカウントが削除済みなどで取れなかった分は出さない
-	targets := slices.DeleteFunc(slices.Clone(ev.Targets), func(t string) bool { return t == "" })
-	if len(targets) > 0 {
-		parts = append(parts, faintStyle.Render("→")+" "+userStyle.Render(strings.Join(targets, ", ")))
+	if len(ev.Targets) > 0 {
+		parts = append(parts, faintStyle.Render("→")+" "+userStyle.Render(strings.Join(ev.Targets, ", ")))
 	}
 	line := eventIndent + strings.Join(parts, " ")
 
@@ -318,7 +305,7 @@ func itemStateStyle(item github.Item) lipgloss.Style {
 type displayEvent struct {
 	github.Event
 	Count   int      // 同じ人の連続したコメント・コミット・レビューをまとめた件数
-	Targets []string // 同じ人の連続したレビュー依頼・アサインをまとめた依頼先
+	Targets []string // 同じ人の連続したレビュー依頼・アサインをまとめた依頼先。空の依頼先は含めない
 }
 
 // collapseEvents は同じ人による連続した同種のイベントを 1 行にまとめる。
@@ -342,7 +329,7 @@ func collapseEvents(events []github.Event) []displayEvent {
 			last.Count++
 			last.At = ev.At
 		case collapseByTargets:
-			last.Targets = append(last.Targets, ev.Target)
+			last.Targets = appendTarget(last.Targets, ev.Target)
 			last.At = ev.At
 		default:
 			out = append(out, newDisplayEvent(ev))
@@ -352,7 +339,15 @@ func collapseEvents(events []github.Event) []displayEvent {
 }
 
 func newDisplayEvent(ev github.Event) displayEvent {
-	return displayEvent{Event: ev, Count: 1, Targets: []string{ev.Target}}
+	return displayEvent{Event: ev, Count: 1, Targets: appendTarget(nil, ev.Target)}
+}
+
+// appendTarget は依頼先を足す。依頼先のアカウントが削除済みなどで取れなかった分（空文字列）は足さない。
+func appendTarget(targets []string, target string) []string {
+	if target == "" {
+		return targets
+	}
+	return append(targets, target)
 }
 
 // collapseMode は同じ人の連続した同種のイベントを 1 行にまとめるときのまとめ方。
@@ -418,18 +413,24 @@ func pushedLabel(count int) string {
 	return fmt.Sprintf("pushed %d commits", count)
 }
 
-// formatEventTime はイベント時刻を出す。区切り行と同じ日なら時刻だけ、
-// 違う日（-since でさかのぼった分など）は日付も付ける。
-func formatEventTime(at, checkedAt time.Time) string {
-	at = at.In(checkedAt.Location())
-	if sameDay(at, checkedAt) {
-		return at.Format("15:04")
+const (
+	clockLayout     = "15:04"
+	dateClockLayout = "01/02 15:04"
+)
+
+// formatTimeOnDayOf は t を ref のタイムゾーンで書く。ref と同じ日なら時刻だけ、
+// 違う日（-since でさかのぼった分や、日付をまたいだ区切り行など）は日付も付ける。
+func formatTimeOnDayOf(t, ref time.Time) string {
+	t = t.In(ref.Location())
+	ty, tm, td := t.Date()
+	ry, rm, rd := ref.Date()
+	if ty == ry && tm == rm && td == rd {
+		return t.Format(clockLayout)
 	}
-	return at.Format("01/02 15:04")
+	return t.Format(dateClockLayout)
 }
 
-func sameDay(a, b time.Time) bool {
-	ay, am, ad := a.Date()
-	by, bm, bd := b.In(a.Location()).Date()
-	return ay == by && am == bm && ad == bd
+// NoUpdatesText は、検索範囲の始点 since から更新が無かったときの案内。
+func NoUpdatesText(since time.Time) string {
+	return fmt.Sprintf("No updates since %s.", since.Format(dateClockLayout))
 }

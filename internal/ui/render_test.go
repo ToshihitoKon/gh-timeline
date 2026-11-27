@@ -3,7 +3,6 @@ package ui
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/charmbracelet/x/ansi"
 
@@ -51,9 +50,9 @@ func TestEventKindOf_LabelsByKindAndCount(t *testing.T) {
 	}
 }
 
-func TestRenderBatch_CollapsesOnlyCountedAndTargetedKinds(t *testing.T) {
+func TestRenderBatches_CollapsesOnlyCountedAndTargetedKinds(t *testing.T) {
 	b := timeline.Batch{
-		CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
+		CheckedAt: timeAt(14, 5),
 		Entries: []timeline.Entry{entry(
 			ev(github.EventReviewed, "alice", 13, 0),
 			ev(github.EventReviewed, "alice", 13, 1),
@@ -61,7 +60,7 @@ func TestRenderBatch_CollapsesOnlyCountedAndTargetedKinds(t *testing.T) {
 			ev(github.EventForcePushed, "bob", 13, 11),
 		)},
 	}
-	got := ansi.Strip(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me"}))
+	got := ansi.Strip(renderBatch(b, RenderOptions{Viewer: "me"}))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
 		"o/r PR#7 Add feature",
@@ -70,24 +69,24 @@ func TestRenderBatch_CollapsesOnlyCountedAndTargetedKinds(t *testing.T) {
 		"  13:01 reviewed (2) alice",
 	}, "\n")
 	if got != want {
-		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
+		t.Errorf("RenderBatches =\n%s\nwant\n%s", got, want)
 	}
 }
 
-func TestRenderBatch_ShowsTargetOfAnyKind(t *testing.T) {
+func TestRenderBatches_ShowsTargetOfAnyKind(t *testing.T) {
 	commented := ev(github.EventCommented, "alice", 13, 0)
 	commented.Target = "bob"
 	b := timeline.Batch{
-		CheckedAt: time.Date(2026, 11, 20, 14, 5, 0, 0, jst),
+		CheckedAt: timeAt(14, 5),
 		Entries:   []timeline.Entry{entry(commented)},
 	}
-	got := ansi.Strip(RenderBatch(b, time.Time{}, RenderOptions{Viewer: "me"}))
+	got := ansi.Strip(renderBatch(b, RenderOptions{Viewer: "me"}))
 	want := strings.Join([]string{
 		"--- 14:05 ---",
 		"o/r PR#7 Add feature",
 		"  13:00 commented alice → bob",
 	}, "\n")
 	if got != want {
-		t.Errorf("RenderBatch =\n%s\nwant\n%s", got, want)
+		t.Errorf("RenderBatches =\n%s\nwant\n%s", got, want)
 	}
 }

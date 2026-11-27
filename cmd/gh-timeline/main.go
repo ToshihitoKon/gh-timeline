@@ -112,12 +112,12 @@ func runDump(fetcher ui.Fetcher, tracker *timeline.Tracker, showURL bool, timeou
 		fmt.Fprintln(os.Stderr, "gh-timeline: some results are missing:", strings.Join(result.PartialErrors, "; "))
 	}
 	if len(batch.Entries) == 0 {
-		fmt.Printf("No updates since %s.\n", since.Format("01/02 15:04"))
+		fmt.Println(ui.NoUpdatesText(since))
 		return nil
 	}
-	fmt.Println(ui.RenderBatch(batch, time.Time{}, ui.RenderOptions{Viewer: result.Viewer, ShowURL: showURL}))
+	fmt.Println(ui.RenderBatches([]timeline.Batch{batch}, 0, ui.RenderOptions{Viewer: result.Viewer, ShowURL: showURL}))
 	if result.Truncated {
-		fmt.Println("(some results were truncated: over 100 hits)")
+		fmt.Printf("(some results were truncated: over %d hits)\n", github.SearchPageSize)
 	}
 	return nil
 }

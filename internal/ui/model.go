@@ -15,7 +15,6 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ToshihitoKon/gh-timeline/internal/github"
 	"github.com/ToshihitoKon/gh-timeline/internal/timeline"
@@ -72,8 +71,9 @@ type Model struct {
 
 	renderCache batchRenderCache
 
-	// pollSeq は予約中のポーリングを識別する番号。r キーで即時に取得したとき、
-	// それ以前に予約した tick を無効にしてポーリングが二重に走らないようにする。
+	// pollSeq は予約中のポーリングを識別する番号。予約し直すと、それ以前に予約した tick を無効にする。
+	// r キーで取得するときに番号を進めないのは、取得中に届いた tick は isFetching で、
+	// 取得後に届いた tick は取得後の予約し直しで捨てられるため。
 	pollSeq int
 
 	viewport viewport.Model
@@ -84,11 +84,7 @@ type Model struct {
 
 // NewModel は Model を作る。showURL が true なら PR / issue の見出し行の次に URL の行を出す。
 func NewModel(fetcher Fetcher, tracker *timeline.Tracker, interval time.Duration, showURL bool) Model {
-	sp := spinner.New()
-	sp.Spinner = spinner.Spinner{
-		Frames: []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"},
-		FPS:    spinnerFrameInterval,
-	}
+	sp := spinner.New(spinner.WithSpinner(spinner.Spinner{Frames: spinner.Dot.Frames, FPS: spinnerFrameInterval}))
 	return Model{fetcher: fetcher, tracker: tracker, interval: interval, showURL: showURL, spinner: sp}
 }
 
@@ -144,7 +140,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.isFetching {
 				return m, nil
 			}
-			m.pollSeq++ // 予約済みの tick を無効にする
 			return m, m.startFetch(time.Now())
 		case " ":
 			// viewport の既定ではスペースが 1 画面下へのスクロールに割り当たっているため、
@@ -234,13 +229,14 @@ func (m *Model) renderTimeline() string {
 		if m.watchingSince.IsZero() {
 			return faintStyle.Render("Loading...")
 		}
-		return faintStyle.Render(fmt.Sprintf("No updates since %s.", m.watchingSince.Format("01/02 15:04")))
+		return faintStyle.Render(NoUpdatesText(m.watchingSince))
 	}
 	return m.renderCache.render(m.batches, m.readBatchCount, RenderOptions{
 		Viewer:        m.viewer,
 		Width:         m.width,
 		ShowURL:       m.showURL,
 		UseHyperlinks: true,
+		ShowGutter:    true,
 	})
 }
 
@@ -253,25 +249,22 @@ func (m Model) View() string {
 		viewer = "@" + m.viewer
 	}
 	title := lipgloss.NewStyle().Bold(true).Render("gh-timeline — " + viewer)
-	return m.fitWidth(title) + "\n" + m.fitWidth(m.statusLine()) + "\n" + m.viewport.View() + "\n" + m.fitWidth(m.footer())
-}
-
-// fitWidth は折り返しで viewport の高さの計算がずれないよう、行を端末幅で切り詰める。
-func (m Model) fitWidth(s string) string {
-	return ansi.Truncate(s, m.width, "…")
+	// 折り返しで viewport の高さの計算がずれないよう、viewport 以外の行も端末幅で切り詰める。
+	return truncate(title, m.width) + "\n" + truncate(m.statusLine(), m.width) + "\n" + m.viewport.View() + "\n" + truncate(m.footer(), m.width)
 }
 
 func (m Model) statusLine() string {
 	if m.isFetching {
-		return m.spinner.View() + faintStyle.Render(" checking...")
+		// spinner.Dot のフレームは後ろに空白を含む
+		return m.spinner.View() + faintStyle.Render("checking...")
 	}
 	if m.nextPollAt.IsZero() {
 		return ""
 	}
-	text := fmt.Sprintf("next %s · every %s", m.nextPollAt.Format("15:04"), m.interval)
+	text := fmt.Sprintf("next %s · every %s", m.nextPollAt.Format(clockLayout), m.interval)
 	// checked には成功した回の時刻だけを出す。失敗した回の時刻を出すと、取得できたように読めるため。
 	if !m.lastCheckedAt.IsZero() {
-		text = fmt.Sprintf("checked %s · %s", m.lastCheckedAt.Format("15:04"), text)
+		text = fmt.Sprintf("checked %s · %s", m.lastCheckedAt.Format(clockLayout), text)
 	}
 	return faintStyle.Render(text)
 }
@@ -287,7 +280,7 @@ func (m Model) footer() string {
 	case len(m.partialErrors) > 0:
 		return draftStyle.Render("some results are missing: "+oneLine(strings.Join(m.partialErrors, "; "))) + "   " + keys
 	case m.isTruncated:
-		return draftStyle.Render("some results were truncated (over 100 hits)") + "   " + keys
+		return draftStyle.Render(fmt.Sprintf("some results were truncated (over %d hits)", github.SearchPageSize)) + "   " + keys
 	}
 	return keys
 }
